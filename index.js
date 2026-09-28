@@ -1,5 +1,5 @@
 const express = require('express');
-const http = http = require('http'); // Corregido el doble http
+const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const axios = require('axios');
@@ -136,7 +136,7 @@ app.post('/webhook', async (req, res) => {
                         const contactoCheck = await pool.query('SELECT * FROM contactos WHERE numero = $1', [remitente]);
                         const esContactoNuevo = contactoCheck.rows.length === 0;
 
-                        // Guardar o actualizar contacto (marcando leido = false para indicar mensaje nuevo pendiente si se desea)
+                        // Guardar o actualizar contacto (marcando leido = false para indicar mensaje nuevo pendiente)
                         await pool.query(
                             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fecha) 
                              VALUES ($1, $2, $3, FALSE, NOW()) 
@@ -182,7 +182,7 @@ app.post('/webhook', async (req, res) => {
                                     } catch (welcomeErr) {
                                         console.error("❌ Error enviando bienvenida automática:", welcomeErr.message);
                                     }
-                                }, 1500); // Pequeño retraso de 1.5s para naturalidad
+                                }, 1500);
                             }
                         }
 
@@ -341,11 +341,6 @@ async function subirMediaAMeta(base64Data, mimeType) {
     });
     form.append('messaging_product', 'whatsapp');
 
-    const response = acordarPostMedia(form, finalMimeType);
-    return response;
-}
-
-async function acordarPostMedia(form, finalMimeType) {
     const response = await axios.post(
         `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`,
         form,
@@ -356,6 +351,7 @@ async function acordarPostMedia(form, finalMimeType) {
             }
         }
     );
+
     return response.data.id;
 }
 
