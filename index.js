@@ -93,7 +93,7 @@ app.get('/webhook', (req, res) => {
     res.sendStatus(400);
 });
 
-// 2. Recepción de mensajes desde WhatsApp (Webhook)
+// 2. Recepción de mensajes desde WhatsApp (Webhook de Meta)
 app.post('/webhook', async (req, res) => {
     res.status(200).send('EVENT_RECEIVED');
 
@@ -104,20 +104,18 @@ app.post('/webhook', async (req, res) => {
             entry.changes?.forEach(async change => {
                 const value = change.value;
                 let nombreContacto = 'Desconocido';
-                let waId = '';
 
                 if (value.contacts && value.contacts.length > 0) {
                     nombreContacto = value.contacts[0].profile?.name || 'Sin Nombre';
-                    waId = value.contacts[0].wa_id;
                 }
 
-                // A. Mensajes entrantes
+                // A. Mensajes ENTRANTES (Enviados por el cliente)
                 if (value.messages && value.messages.length > 0) {
                     const mensaje = value.messages[0];
                     const remitente = mensaje.from;
                     const tipo = mensaje.type;
 
-                    // Evitar procesar mensajes enviados por tu propio ID de negocio si llega en la notificación
+                    // Si el mensaje proviene del mismo ID de WhatsApp Business, ignorarlo en el webhook de entrada
                     if (remitente === PHONE_NUMBER_ID) {
                         return;
                     }
@@ -136,9 +134,9 @@ app.post('/webhook', async (req, res) => {
                         contenido = `[Archivo: ${tipo}]`;
                     }
 
-                    console.log(`📩 [${tipo.toUpperCase()}] de ${nombreContacto} (${remitente}): ${contenido}`);
+                    console.log(`📩 ENTRANTE [${tipo.toUpperCase()}] de ${nombreContacto} (${remitente}): ${contenido}`);
 
-                    // Guardar contacto y mensaje en PostgreSQL
+                    // Guardar en DB como mensaje ENTRANTE
                     try {
                         await pool.query(
                             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
@@ -156,7 +154,7 @@ app.post('/webhook', async (req, res) => {
                         console.error("❌ Error al guardar en DB:", dbErr.message);
                     }
 
-                    // Notificar a la interfaz cliente por Socket.io
+                    // Emitir a la interfaz como mensaje ENTRANTE
                     io.emit('nuevo_mensaje', {
                         nombre: nombreContacto,
                         numero: remitente,
@@ -167,7 +165,7 @@ app.post('/webhook', async (req, res) => {
                     });
                 }
 
-                // B. Actualizaciones de estado
+                // B. Actualizaciones de estado de mensajes
                 if (value.statuses && value.statuses.length > 0) {
                     const estado = value.statuses[0];
                     io.emit('estado_mensaje', {
@@ -197,7 +195,7 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
-// 4. Endpoint para Enviar Mensajes desde el CRM (PC / Móvil)
+// 4. Endpoint para Enviar Mensajes SALIENTES desde el CRM
 app.post('/api/enviar', async (req, res) => {
     const { numero, mensaje = '', tipo = 'text', mediaBase64, mimeType } = req.body;
 
@@ -217,7 +215,7 @@ app.post('/api/enviar', async (req, res) => {
 
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
-        // Guardar en DB
+        // Guardar en DB como mensaje SALIANTE
         await pool.query(
             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
              VALUES ($1, $1, $2, NOW()) 
@@ -231,7 +229,7 @@ app.post('/api/enviar', async (req, res) => {
             [numero, tipo, textoGuardar]
         );
 
-        // Notificar en tiempo real a TODOS los clientes web/móvil conectados
+        // Emitir a la interfaz (PC y Celular) marcándolo como SALIENTE
         io.emit('nuevo_mensaje', {
             nombre: numero,
             numero: numero,
