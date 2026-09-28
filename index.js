@@ -34,9 +34,10 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Crear tablas en PostgreSQL al iniciar
+// Crear y migrar tablas en PostgreSQL al iniciar
 async function initDB() {
     try {
+        // 1. Crear tablas si no existen
         await pool.query(`
             CREATE TABLE IF NOT EXISTS contactos (
                 numero VARCHAR(50) PRIMARY KEY,
@@ -48,13 +49,21 @@ async function initDB() {
             CREATE TABLE IF NOT EXISTS mensajes (
                 id SERIAL PRIMARY KEY,
                 numero VARCHAR(50),
-                tipo_envio VARCHAR(10), -- 'entrante' o 'saliente'
-                tipo_contenido VARCHAR(20), -- 'text', 'image', 'audio', etc.
+                tipo_envio VARCHAR(10),
+                tipo_contenido VARCHAR(20),
                 contenido TEXT,
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        console.log("🟢 Conectado exitosamente a PostgreSQL en Render");
+
+        // 2. Garantizar que las columnas existan si la tabla ya había sido creada previamente sin ellas
+        await pool.query(`
+            ALTER TABLE contactos ADD COLUMN IF NOT EXISTS ultimo_mensaje TEXT;
+            ALTER TABLE contactos ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        `);
+
+        console.log("🟢 Conectado y tablas sincronizadas exitosamente en PostgreSQL");
     } catch (err) {
         console.error("❌ Error al conectar o inicializar PostgreSQL:", err.message);
     }
