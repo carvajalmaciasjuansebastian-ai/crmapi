@@ -45,8 +45,8 @@ app.post('/webhook', async (req, res) => {
       const value = changes?.value;
       const message = value?.messages?.[0];
 
-      // Verificar si hay un mensaje entrante
-      if (message) {
+      // Ignorar mensajes que son "echoes" (enviados por el mismo número/bot)
+      if (message && !message.from_me) {
         const from = message.from; // Número de teléfono del cliente
 
         // Manejar mensajes de tipo texto
@@ -78,7 +78,7 @@ async function sendWhatsAppMessage(to, text) {
   try {
     const response = await axios({
       method: 'POST',
-      url: `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,
+      url: `https://graph.facebook.com/v22.0/${PHONE_NUMBER_ID}/messages`,
       headers: {
         'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
         'Content-Type': 'application/json'
