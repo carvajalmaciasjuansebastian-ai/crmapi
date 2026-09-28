@@ -34,10 +34,10 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Crear y migrar tablas en PostgreSQL al iniciar
+// Crear y sincronizar estructura de PostgreSQL al iniciar
 async function initDB() {
     try {
-        // 1. Crear tablas si no existen
+        // 1. Crear tablas base si no existen
         await pool.query(`
             CREATE TABLE IF NOT EXISTS contactos (
                 numero VARCHAR(50) PRIMARY KEY,
@@ -56,10 +56,19 @@ async function initDB() {
             );
         `);
 
-        // 2. Garantizar que las columnas existan si la tabla ya había sido creada previamente sin ellas
+        // 2. Forzar actualización de columnas en la tabla contactos
         await pool.query(`
+            ALTER TABLE contactos ADD COLUMN IF NOT EXISTS nombre VARCHAR(255);
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS ultimo_mensaje TEXT;
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        `);
+
+        // 3. Forzar actualización de columnas en la tabla mensajes (Soluciona el error actual)
+        await pool.query(`
+            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS numero VARCHAR(50);
+            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS tipo_envio VARCHAR(10);
+            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS tipo_contenido VARCHAR(20);
+            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS contenido TEXT;
             ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
         `);
 
@@ -144,12 +153,13 @@ app.post('/webhook', async (req, res) => {
                         console.error("❌ Error al guardar en DB:", dbErr.message);
                     }
 
-                    // Notificar al CRM por Socket.io
+                    // Notificar al CRM por Socket.io (Tiempo real)
                     io.emit('nuevo_mensaje', {
                         nombre: nombreContacto,
                         numero: remitente,
                         mensaje: contenido,
                         tipo: tipo,
+                        tipo_envio: 'entrante',
                         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                     });
                 }
@@ -203,9 +213,10 @@ app.post('/api/enviar', async (req, res) => {
 
         const respuesta = await enviarMensajeWhatsApp(numero, mensaje, tipo, mediaId);
 
-        // Guardar mensaje saliente en PostgreSQL
+        // Definir texto a registrar en DB según el tipo
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
+        // Guardar en la base de datos
         await pool.query(
             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
              VALUES ($1, $1, $2, NOW()) 
@@ -219,6 +230,16 @@ app.post('/api/enviar', async (req, res) => {
             [numero, tipo, textoGuardar]
         );
 
+        // Emitir vía Socket.io para actualizar en tiempo real la app móvil y la web
+        io.emit('nuevo_mensaje', {
+            nombre: numero,
+            numero: numero,
+            mensaje: textoGuardar,
+            tipo: tipo,
+            tipo_envio: 'saliente',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+
         res.json({ success: true, data: respuesta });
     } catch (error) {
         console.error("❌ Error en /api/enviar:", error.response?.data || error.message);
@@ -231,7 +252,6 @@ async function subirMediaAMeta(base64Data, mimeType) {
     const cleanBase64 = base64Data.replace(/^data:(.*);base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
 
-    // Normalizar tipos de audio para evitar el error #100 de Meta
     let finalMimeType = mimeType;
     if (mimeType.includes('audio') || mimeType.includes('webm')) {
         finalMimeType = 'audio/ogg';
