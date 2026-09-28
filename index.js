@@ -10,7 +10,7 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
-// Configuración del cuerpo de las peticiones para imágenes/audios en Base64
+// Configuración del cuerpo de las peticiones
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ limit: '25mb', extended: true }));
@@ -37,7 +37,6 @@ const pool = new Pool({
 // Crear y sincronizar estructura de PostgreSQL al iniciar
 async function initDB() {
     try {
-        // 1. Crear tablas base si no existen
         await pool.query(`
             CREATE TABLE IF NOT EXISTS contactos (
                 numero VARCHAR(50) PRIMARY KEY,
@@ -56,14 +55,12 @@ async function initDB() {
             );
         `);
 
-        // 2. Forzar actualización de columnas en la tabla contactos
         await pool.query(`
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS nombre VARCHAR(255);
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS ultimo_mensaje TEXT;
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
         `);
 
-        // 3. Forzar actualización de columnas en la tabla mensajes (Soluciona el error actual)
         await pool.query(`
             ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS numero VARCHAR(50);
             ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS tipo_envio VARCHAR(10);
@@ -119,6 +116,12 @@ app.post('/webhook', async (req, res) => {
                     const mensaje = value.messages[0];
                     const remitente = mensaje.from;
                     const tipo = mensaje.type;
+
+                    // Evitar procesar mensajes enviados por tu propio ID de negocio si llega en la notificación
+                    if (remitente === PHONE_NUMBER_ID) {
+                        return;
+                    }
+
                     let contenido = '';
 
                     if (tipo === 'text') {
@@ -153,7 +156,7 @@ app.post('/webhook', async (req, res) => {
                         console.error("❌ Error al guardar en DB:", dbErr.message);
                     }
 
-                    // Notificar al CRM por Socket.io (Tiempo real)
+                    // Notificar a la interfaz cliente por Socket.io
                     io.emit('nuevo_mensaje', {
                         nombre: nombreContacto,
                         numero: remitente,
@@ -194,7 +197,7 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
-// 4. Endpoint para Enviar Mensajes, Audios e Imágenes desde el CRM
+// 4. Endpoint para Enviar Mensajes desde el CRM (PC / Móvil)
 app.post('/api/enviar', async (req, res) => {
     const { numero, mensaje = '', tipo = 'text', mediaBase64, mimeType } = req.body;
 
@@ -205,7 +208,6 @@ app.post('/api/enviar', async (req, res) => {
     try {
         let mediaId = null;
 
-        // Si incluye archivo multimedia, subirlo primero a Meta
         if (mediaBase64) {
             console.log(`📤 Subiendo archivo multimedia (${tipo}) a Meta...`);
             mediaId = await subirMediaAMeta(mediaBase64, mimeType || (tipo === 'audio' ? 'audio/ogg' : 'image/jpeg'));
@@ -213,10 +215,9 @@ app.post('/api/enviar', async (req, res) => {
 
         const respuesta = await enviarMensajeWhatsApp(numero, mensaje, tipo, mediaId);
 
-        // Definir texto a registrar en DB según el tipo
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
-        // Guardar en la base de datos
+        // Guardar en DB
         await pool.query(
             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
              VALUES ($1, $1, $2, NOW()) 
@@ -230,7 +231,7 @@ app.post('/api/enviar', async (req, res) => {
             [numero, tipo, textoGuardar]
         );
 
-        // Emitir vía Socket.io para actualizar en tiempo real la app móvil y la web
+        // Notificar en tiempo real a TODOS los clientes web/móvil conectados
         io.emit('nuevo_mensaje', {
             nombre: numero,
             numero: numero,
@@ -247,7 +248,7 @@ app.post('/api/enviar', async (req, res) => {
     }
 });
 
-// Subir multimedia a Meta en formato binario
+// Subir multimedia a Meta
 async function subirMediaAMeta(base64Data, mimeType) {
     const cleanBase64 = base64Data.replace(/^data:(.*);base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
@@ -284,7 +285,7 @@ function obtenerNombreArchivo(mimeType) {
     return 'imagen.jpg';
 }
 
-// Estructurar la petición para la API de WhatsApp Cloud
+// Envío a la API de WhatsApp Cloud
 async function enviarMensajeWhatsApp(numeroDestino, texto, tipo, mediaId) {
     if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
         throw new Error('Variables WHATSAPP_TOKEN o PHONE_NUMBER_ID no configuradas en Render.');
