@@ -115,7 +115,6 @@ app.post('/webhook', async (req, res) => {
                     const remitente = mensaje.from;
                     const tipo = mensaje.type;
 
-                    // Si el mensaje proviene del mismo ID de WhatsApp Business, ignorarlo en el webhook de entrada
                     if (remitente === PHONE_NUMBER_ID) {
                         return;
                     }
@@ -136,7 +135,6 @@ app.post('/webhook', async (req, res) => {
 
                     console.log(`📩 ENTRANTE [${tipo.toUpperCase()}] de ${nombreContacto} (${remitente}): ${contenido}`);
 
-                    // Guardar en DB como mensaje ENTRANTE
                     try {
                         await pool.query(
                             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
@@ -154,7 +152,6 @@ app.post('/webhook', async (req, res) => {
                         console.error("❌ Error al guardar en DB:", dbErr.message);
                     }
 
-                    // Emitir a la interfaz como mensaje ENTRANTE
                     io.emit('nuevo_mensaje', {
                         nombre: nombreContacto,
                         numero: remitente,
@@ -165,7 +162,7 @@ app.post('/webhook', async (req, res) => {
                     });
                 }
 
-                // B. Actualizaciones de estado de mensajes
+                // B. Actualizaciones de estado
                 if (value.statuses && value.statuses.length > 0) {
                     const estado = value.statuses[0];
                     io.emit('estado_mensaje', {
@@ -195,7 +192,7 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
-// 4. Endpoint para Enviar Mensajes SALIENTES desde el CRM
+// 4. Endpoint para Enviar Mensajes SALIENTES desde el CRM (PC o Celular)
 app.post('/api/enviar', async (req, res) => {
     const { numero, mensaje = '', tipo = 'text', mediaBase64, mimeType } = req.body;
 
@@ -215,7 +212,7 @@ app.post('/api/enviar', async (req, res) => {
 
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
-        // Guardar en DB como mensaje SALIANTE
+        // Guardar contacto
         await pool.query(
             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
              VALUES ($1, $1, $2, NOW()) 
@@ -223,13 +220,14 @@ app.post('/api/enviar', async (req, res) => {
             [numero, textoGuardar]
         );
 
+        // Guardar mensaje estricto como SALIENTE en DB
         await pool.query(
             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) 
              VALUES ($1, 'saliente', $2, $3, NOW())`,
             [numero, tipo, textoGuardar]
         );
 
-        // Emitir a la interfaz (PC y Celular) marcándolo como SALIENTE
+        // Notificar a todos los clientes marcándolo como SALIENTE
         io.emit('nuevo_mensaje', {
             nombre: numero,
             numero: numero,
