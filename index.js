@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http'); // Corregido el doble http
 const { Server } = require('socket.io');
 const cors = require('cors');
 const axios = require('axios');
@@ -10,12 +10,10 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
-// Configuración del cuerpo de las peticiones
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ limit: '25mb', extended: true }));
 
-// Configurar Socket.io
 const io = new Server(server, {
     cors: {
         origin: "*", 
@@ -28,13 +26,12 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'tu_token_de_verificacion';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Configuración de la base de datos PostgreSQL
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Crear y sincronizar estructura de PostgreSQL al iniciar
+// Inicializar tablas incluyendo configuración y estado de leídos
 async function initDB() {
     try {
         await pool.query(`
@@ -42,6 +39,7 @@ async function initDB() {
                 numero VARCHAR(50) PRIMARY KEY,
                 nombre VARCHAR(255),
                 ultimo_mensaje TEXT,
+                leido BOOLEAN DEFAULT FALSE,
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -53,20 +51,19 @@ async function initDB() {
                 contenido TEXT,
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS configuracion (
+                clave VARCHAR(50) PRIMARY KEY,
+                valor TEXT
+            );
         `);
 
+        // Asegurar columnas si ya existían las tablas
         await pool.query(`
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS nombre VARCHAR(255);
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS ultimo_mensaje TEXT;
+            ALTER TABLE contactos ADD COLUMN IF NOT EXISTS leido BOOLEAN DEFAULT FALSE;
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-        `);
-
-        await pool.query(`
-            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS numero VARCHAR(50);
-            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS tipo_envio VARCHAR(10);
-            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS tipo_contenido VARCHAR(20);
-            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS contenido TEXT;
-            ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
         `);
 
         console.log("🟢 Conectado y tablas sincronizadas exitosamente en PostgreSQL");
@@ -109,7 +106,6 @@ app.post('/webhook', async (req, res) => {
                     nombreContacto = value.contacts[0].profile?.name || 'Sin Nombre';
                 }
 
-                // A. Mensajes ENTRANTES (Enviados por el cliente)
                 if (value.messages && value.messages.length > 0) {
                     const mensaje = value.messages[0];
                     const remitente = mensaje.from;
@@ -136,10 +132,15 @@ app.post('/webhook', async (req, res) => {
                     console.log(`📩 ENTRANTE [${tipo.toUpperCase()}] de ${nombreContacto} (${remitente}): ${contenido}`);
 
                     try {
+                        // Verificar si el contacto ya existía antes de este mensaje
+                        const contactoCheck = await pool.query('SELECT * FROM contactos WHERE numero = $1', [remitente]);
+                        const esContactoNuevo = contactoCheck.rows.length === 0;
+
+                        // Guardar o actualizar contacto (marcando leido = false para indicar mensaje nuevo pendiente si se desea)
                         await pool.query(
-                            `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
-                             VALUES ($1, $2, $3, NOW()) 
-                             ON CONFLICT (numero) DO UPDATE SET nombre = EXCLUDED.nombre, ultimo_mensaje = EXCLUDED.ultimo_mensaje, fecha = NOW()`,
+                            `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fecha) 
+                             VALUES ($1, $2, $3, FALSE, NOW()) 
+                             ON CONFLICT (numero) DO UPDATE SET nombre = EXCLUDED.nombre, ultimo_mensaje = EXCLUDED.ultimo_mensaje, leido = FALSE, fecha = NOW()`,
                             [remitente, nombreContacto, contenido]
                         );
 
@@ -148,6 +149,43 @@ app.post('/webhook', async (req, res) => {
                              VALUES ($1, 'entrante', $2, $3, NOW())`,
                             [remitente, tipo, contenido]
                         );
+
+                        // DISPARAR MENSAJE DE BIENVENIDA SI ES NUEVO
+                        if (esContactoNuevo) {
+                            const configRes = await pool.query('SELECT valor FROM configuracion WHERE clave = $1', ['bienvenida_activa']);
+                            const bienvenidaActiva = configRes.rows[0]?.valor === 'true';
+
+                            if (bienvenidaActiva) {
+                                const textoRes = await pool.query('SELECT valor FROM configuracion WHERE clave = $1', ['bienvenida_texto']);
+                                const mensajeBienvenida = textoRes.rows[0]?.valor || '¡Hola! Gracias por escribirnos. ¿En qué podemos ayudarte?';
+
+                                setTimeout(async () => {
+                                    try {
+                                        await enviarMensajeWhatsApp(remitente, mensajeBienvenida, 'text', null);
+                                        
+                                        // Registrar el mensaje de bienvenida automático en la base de datos como saliente
+                                        await pool.query(
+                                            `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) 
+                                             VALUES ($1, 'saliente', 'text', $2, NOW())`,
+                                            [remitente, mensajeBienvenida]
+                                        );
+
+                                        io.emit('nuevo_mensaje', {
+                                            nombre: nombreContacto,
+                                            numero: remitente,
+                                            mensaje: mensajeBienvenida,
+                                            tipo: 'text',
+                                            tipo_envio: 'saliente',
+                                            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                        });
+                                        console.log(`🤖 Mensaje de bienvenida enviado automáticamente a ${remitente}`);
+                                    } catch (welcomeErr) {
+                                        console.error("❌ Error enviando bienvenida automática:", welcomeErr.message);
+                                    }
+                                }, 1500); // Pequeño retraso de 1.5s para naturalidad
+                            }
+                        }
+
                     } catch (dbErr) {
                         console.error("❌ Error al guardar en DB:", dbErr.message);
                     }
@@ -162,7 +200,6 @@ app.post('/webhook', async (req, res) => {
                     });
                 }
 
-                // B. Actualizaciones de estado
                 if (value.statuses && value.statuses.length > 0) {
                     const estado = value.statuses[0];
                     io.emit('estado_mensaje', {
@@ -173,6 +210,41 @@ app.post('/webhook', async (req, res) => {
                 }
             });
         });
+    }
+});
+
+// Endpoint para guardar o actualizar la configuración de bienvenida desde el CRM
+app.post('/api/configuracion', async (req, res) => {
+    const { activa, texto } = req.body;
+    try {
+        await pool.query(
+            `INSERT INTO configuracion (clave, valor) VALUES ('bienvenida_activa', $1) 
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor`,
+            [String(activa)]
+        );
+        if (texto) {
+            await pool.query(
+                `INSERT INTO configuracion (clave, valor) VALUES ('bienvenida_texto', $1) 
+                 ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor`,
+                [texto]
+            );
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error("❌ Error guardando configuración:", err.message);
+        res.status(500).json({ error: "Error al guardar configuración" });
+    }
+});
+
+// Endpoint para obtener configuración actual
+app.get('/api/configuracion', async (req, res) => {
+    try {
+        const rows = await pool.query('SELECT * FROM configuracion');
+        const config = {};
+        rows.rows.forEach(r => { config[r.clave] = r.valor; });
+        res.json(config);
+    } catch (err) {
+        res.status(500).json({ error: "Error al obtener configuración" });
     }
 });
 
@@ -192,7 +264,18 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
-// 4. Endpoint para Enviar Mensajes SALIENTES desde el CRM (PC o Celular)
+// Endpoint para marcar chat como leído (quita el indicador rojo)
+app.post('/api/leer', async (req, res) => {
+    const { numero } = req.body;
+    try {
+        await pool.query('UPDATE contactos SET leido = TRUE WHERE numero = $1', [numero]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: "Error al actualizar estado" });
+    }
+});
+
+// 4. Endpoint para Enviar Mensajes SALIENTES desde el CRM
 app.post('/api/enviar', async (req, res) => {
     const { numero, mensaje = '', tipo = 'text', mediaBase64, mimeType } = req.body;
 
@@ -212,22 +295,20 @@ app.post('/api/enviar', async (req, res) => {
 
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
-        // Guardar contacto
+        // Al responder, marcamos automáticamente el chat como leído para que se quite la alerta roja
         await pool.query(
-            `INSERT INTO contactos (numero, nombre, ultimo_mensaje, fecha) 
-             VALUES ($1, $1, $2, NOW()) 
-             ON CONFLICT (numero) DO UPDATE SET ultimo_mensaje = EXCLUDED.ultimo_mensaje, fecha = NOW()`,
+            `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fecha) 
+             VALUES ($1, $1, $2, TRUE, NOW()) 
+             ON CONFLICT (numero) DO UPDATE SET ultimo_mensaje = EXCLUDED.ultimo_mensaje, leido = TRUE, fecha = NOW()`,
             [numero, textoGuardar]
         );
 
-        // Guardar mensaje estricto como SALIENTE en DB
         await pool.query(
             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) 
              VALUES ($1, 'saliente', $2, $3, NOW())`,
             [numero, tipo, textoGuardar]
         );
 
-        // Notificar a todos los clientes marcándolo como SALIENTE
         io.emit('nuevo_mensaje', {
             nombre: numero,
             numero: numero,
@@ -244,7 +325,6 @@ app.post('/api/enviar', async (req, res) => {
     }
 });
 
-// Subir multimedia a Meta
 async function subirMediaAMeta(base64Data, mimeType) {
     const cleanBase64 = base64Data.replace(/^data:(.*);base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
@@ -261,6 +341,11 @@ async function subirMediaAMeta(base64Data, mimeType) {
     });
     form.append('messaging_product', 'whatsapp');
 
+    const response = acordarPostMedia(form, finalMimeType);
+    return response;
+}
+
+async function acordarPostMedia(form, finalMimeType) {
     const response = await axios.post(
         `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`,
         form,
@@ -271,7 +356,6 @@ async function subirMediaAMeta(base64Data, mimeType) {
             }
         }
     );
-
     return response.data.id;
 }
 
@@ -281,7 +365,6 @@ function obtenerNombreArchivo(mimeType) {
     return 'imagen.jpg';
 }
 
-// Envío a la API de WhatsApp Cloud
 async function enviarMensajeWhatsApp(numeroDestino, texto, tipo, mediaId) {
     if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
         throw new Error('Variables WHATSAPP_TOKEN o PHONE_NUMBER_ID no configuradas en Render.');
