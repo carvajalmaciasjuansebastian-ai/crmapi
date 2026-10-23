@@ -132,11 +132,9 @@ app.post('/webhook', async (req, res) => {
                     console.log(`📩 ENTRANTE [${tipo.toUpperCase()}] de ${nombreContacto} (${remitente}): ${contenido}`);
 
                     try {
-                        // Verificar si el contacto ya existía antes de este mensaje
                         const contactoCheck = await pool.query('SELECT * FROM contactos WHERE numero = $1', [remitente]);
                         const esContactoNuevo = contactoCheck.rows.length === 0;
 
-                        // Guardar o actualizar contacto (marcando leido = false para indicar mensaje nuevo pendiente)
                         await pool.query(
                             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fecha) 
                              VALUES ($1, $2, $3, FALSE, NOW()) 
@@ -163,7 +161,6 @@ app.post('/webhook', async (req, res) => {
                                     try {
                                         await enviarMensajeWhatsApp(remitente, mensajeBienvenida, 'text', null);
                                         
-                                        // Registrar el mensaje de bienvenida automático en la base de datos como saliente
                                         await pool.query(
                                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) 
                                              VALUES ($1, 'saliente', 'text', $2, NOW())`,
@@ -295,7 +292,6 @@ app.post('/api/enviar', async (req, res) => {
 
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
-        // Al responder, marcamos automáticamente el chat como leído para que se quite la alerta roja
         await pool.query(
             `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fecha) 
              VALUES ($1, $1, $2, TRUE, NOW()) 
@@ -322,6 +318,87 @@ app.post('/api/enviar', async (req, res) => {
     } catch (error) {
         console.error("❌ Error en /api/enviar:", error.response?.data || error.message);
         res.status(500).json({ success: false, error: error.response?.data || error.message });
+    }
+});
+
+// 5. NUEVO ENDPOINT: Difusión Masiva utilizando la Plantilla Aprobada de Meta
+app.post('/api/masivo-plantilla', async (req, res) => {
+    const { nombrePlantilla = 'dinamica_dos_cifras' } = req.body;
+
+    try {
+        const resultadoContactos = await pool.query('SELECT numero, nombre FROM contactos');
+        const contactos = resultadoContactos.rows;
+
+        if (!contactos || contactos.length === 0) {
+            return res.status(400).json({ error: 'No hay contactos en la base de datos para enviar la difusión.' });
+        }
+
+        let exitosos = 0;
+        let fallidos = 0;
+
+        console.log(`🚀 Iniciando difusión masiva con plantilla '${nombrePlantilla}' a ${contactos.length} contactos...`);
+
+        for (let contacto of contactos) {
+            const numeroLimpio = contacto.numero.trim();
+            const nombreCliente = contacto.nombre || 'Cliente';
+
+            try {
+                const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+                const payload = {
+                    messaging_product: 'whatsapp',
+                    to: numeroLimpio,
+                    type: 'template',
+                    template: {
+                        name: nombrePlantilla,
+                        language: { code: 'es_CO' } // Idioma oficial configurado en Meta
+                    }
+                };
+
+                await axios.post(url, payload, {
+                    headers: {
+                        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const textoGuardar = `📋 [Plantilla Masiva: ${nombrePlantilla}]`;
+
+                await pool.query(
+                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) 
+                     VALUES ($1, 'saliente', 'text', $2, NOW())`,
+                    [numeroLimpio, textoGuardar]
+                );
+
+                await pool.query(
+                    `UPDATE contactos SET ultimo_mensaje = $1, fecha = NOW() WHERE numero = $2`,
+                    [textoGuardar, numeroLimpio]
+                );
+
+                io.emit('nuevo_mensaje', {
+                    nombre: nombreCliente,
+                    numero: numeroLimpio,
+                    mensaje: textoGuardar,
+                    tipo: 'text',
+                    tipo_envio: 'saliente',
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                });
+
+                exitosos++;
+                // Pausa de 1.2 segundos para proteger tu número ante restricciones de la API de Meta
+                await new Promise(resolve => setTimeout(resolve, 1200));
+
+            } catch (err) {
+                console.error(`❌ Error enviando plantilla a ${numeroLimpio}:`, err.response?.data || err.message);
+                fallidos++;
+            }
+        }
+
+        console.log(`✅ Difusión masiva finalizada. Exitosos: ${exitosos}, Fallidos: ${fallidos}`);
+        res.json({ success: true, exitosos, fallidos });
+
+    } catch (error) {
+        console.error("❌ Error general en difusión masiva con plantilla:", error.message);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
