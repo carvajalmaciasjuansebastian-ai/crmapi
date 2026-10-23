@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const axios = require('axios');
@@ -321,7 +321,55 @@ app.post('/api/enviar', async (req, res) => {
     }
 });
 
-// 5. NUEVO ENDPOINT: Difusión Masiva utilizando la Plantilla Aprobada de Meta
+// 5. NUEVO ENDPOINT: Prueba unitaria de plantilla a un solo número
+app.post('/api/probar-plantilla-unica', async (req, res) => {
+    const { numero } = req.body;
+
+    if (!numero) {
+        return res.status(400).json({ error: 'Falta el número de destino' });
+    }
+
+    try {
+        const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+        const payload = {
+            messaging_product: 'whatsapp',
+            to: numero.trim(),
+            type: 'template',
+            template: {
+                name: 'dinamica_dos_cifras',
+                language: { code: 'es_CO' },
+                components: [
+                    {
+                        type: 'header',
+                        parameters: [
+                            {
+                                type: 'image',
+                                image: {
+                                    link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop'
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        };
+
+        const response = await axios.post(url, payload, {
+            headers: {
+                'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log(`✅ Plantilla de prueba enviada a ${numero}`);
+        res.json({ success: true, data: response.data });
+    } catch (err) {
+        console.error(`❌ Error al probar plantilla con ${numero}:`, err.response?.data || err.message);
+        res.status(500).json({ success: false, error: err.response?.data || err.message });
+    }
+});
+
+// 6. ENDPOINT: Difusión Masiva utilizando la Plantilla Aprobada de Meta
 app.post('/api/masivo-plantilla', async (req, res) => {
     const { nombrePlantilla = 'dinamica_dos_cifras' } = req.body;
 
@@ -358,7 +406,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                                     {
                                         type: 'image',
                                         image: {
-                                            link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop' // <--- CAMBIA ESTE ENLACE POR EL DE TU FLYER / IMAGEN REAL
+                                            link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop'
                                         }
                                     }
                                 ]
