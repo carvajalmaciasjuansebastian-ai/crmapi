@@ -350,7 +350,20 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                     type: 'template',
                     template: {
                         name: nombrePlantilla,
-                        language: { code: 'es_CO' }
+                        language: { code: 'es_CO' },
+                        components: [
+                            {
+                                type: 'header',
+                                parameters: [
+                                    {
+                                        type: 'image',
+                                        image: {
+                                            link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop' // <--- CAMBIA ESTE ENLACE POR EL DE TU FLYER / IMAGEN REAL
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
                     }
                 };
 
