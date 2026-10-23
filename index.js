@@ -350,7 +350,18 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                     type: 'template',
                     template: {
                         name: nombrePlantilla,
-                        language: { code: 'es_CO' } // Idioma oficial configurado en Meta
+                        language: { code: 'es_CO' }, // Idioma oficial configurado en Meta
+                        components: [
+                            {
+                                type: 'body',
+                                parameters: [
+                                    {
+                                        type: 'text',
+                                        text: 'https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv?s=sh&p=a&mlu=4&ilr=4'
+                                    }
+                                ]
+                            }
+                        ]
                     }
                 };
 
