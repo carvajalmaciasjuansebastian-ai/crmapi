@@ -31,6 +31,7 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
+// Inicializar tablas incluyendo configuración y estado de leídos
 async function initDB() {
     try {
         await pool.query(`
@@ -71,6 +72,7 @@ async function initDB() {
 }
 initDB();
 
+// 1. Verificación del Webhook de Meta
 app.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -87,6 +89,7 @@ app.get('/webhook', (req, res) => {
     res.sendStatus(400);
 });
 
+// 2. Recepción de mensajes desde WhatsApp (Webhook de Meta)
 app.post('/webhook', async (req, res) => {
     res.status(200).send('EVENT_RECEIVED');
 
@@ -144,6 +147,7 @@ app.post('/webhook', async (req, res) => {
                             [remitente, tipo, contenido]
                         );
 
+                        // DISPARAR MENSAJE DE BIENVENIDA SI ES NUEVO
                         if (esContactoNuevo) {
                             const configRes = await pool.query('SELECT valor FROM configuracion WHERE clave = $1', ['bienvenida_activa']);
                             const bienvenidaActiva = configRes.rows[0]?.valor === 'true';
@@ -170,6 +174,7 @@ app.post('/webhook', async (req, res) => {
                                             tipo_envio: 'saliente',
                                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                                         });
+                                        console.log(`🤖 Mensaje de bienvenida enviado automáticamente a ${remitente}`);
                                     } catch (welcomeErr) {
                                         console.error("❌ Error enviando bienvenida automática:", welcomeErr.message);
                                     }
@@ -204,6 +209,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+// Endpoint para guardar o actualizar la configuración de bienvenida desde el CRM
 app.post('/api/configuracion', async (req, res) => {
     const { activa, texto } = req.body;
     try {
@@ -221,10 +227,12 @@ app.post('/api/configuracion', async (req, res) => {
         }
         res.json({ success: true });
     } catch (err) {
+        console.error("❌ Error guardando configuración:", err.message);
         res.status(500).json({ error: "Error al guardar configuración" });
     }
 });
 
+// Endpoint para obtener configuración actual
 app.get('/api/configuracion', async (req, res) => {
     try {
         const rows = await pool.query('SELECT * FROM configuracion');
@@ -236,6 +244,7 @@ app.get('/api/configuracion', async (req, res) => {
     }
 });
 
+// 3. Endpoint para obtener el historial de chats desde la DB
 app.get('/api/chats', async (req, res) => {
     try {
         const contactos = await pool.query('SELECT * FROM contactos ORDER BY fecha DESC');
@@ -246,10 +255,12 @@ app.get('/api/chats', async (req, res) => {
             mensajes: mensajes.rows
         });
     } catch (err) {
+        console.error("❌ Error al obtener chats:", err.message);
         res.status(500).json({ error: "Error de servidor al cargar chats" });
     }
 });
 
+// Endpoint para marcar chat como leído (quita el indicador rojo)
 app.post('/api/leer', async (req, res) => {
     const { numero } = req.body;
     try {
@@ -260,6 +271,7 @@ app.post('/api/leer', async (req, res) => {
     }
 });
 
+// 4. Endpoint para Enviar Mensajes SALIENTES desde el CRM
 app.post('/api/enviar', async (req, res) => {
     const { numero, mensaje = '', tipo = 'text', mediaBase64, mimeType } = req.body;
 
@@ -271,10 +283,12 @@ app.post('/api/enviar', async (req, res) => {
         let mediaId = null;
 
         if (mediaBase64) {
+            console.log(`📤 Subiendo archivo multimedia (${tipo}) a Meta...`);
             mediaId = await subirMediaAMeta(mediaBase64, mimeType || (tipo === 'audio' ? 'audio/ogg' : 'image/jpeg'));
         }
 
         const respuesta = await enviarMensajeWhatsApp(numero, mensaje, tipo, mediaId);
+
         const textoGuardar = tipo === 'text' ? mensaje : (tipo === 'audio' ? '🎵 [Nota de voz enviada]' : '📷 [Imagen enviada]');
         
         await pool.query(
@@ -301,10 +315,12 @@ app.post('/api/enviar', async (req, res) => {
 
         res.json({ success: true, data: respuesta });
     } catch (error) {
+        console.error("❌ Error en /api/enviar:", error.response?.data || error.message);
         res.status(500).json({ success: false, error: error.response?.data || error.message });
     }
 });
 
+// 5. ENDPOINT: Prueba unitaria de plantilla 'notificacion_dinamica' (Sin variables)
 app.post('/api/probar-plantilla-unica', async (req, res) => {
     const { numero } = req.body;
 
@@ -344,12 +360,15 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
             }
         });
 
+        console.log(`✅ Plantilla 'notificacion_dinamica' enviada a ${numero}`);
         res.json({ success: true, data: response.data });
     } catch (err) {
+        console.error(`❌ Error al probar plantilla con ${numero}:`, err.response?.data || err.message);
         res.status(500).json({ success: false, error: err.response?.data || err.message });
     }
 });
 
+// 6. ENDPOINT: Difusión Masiva utilizando la Plantilla 'notificacion_dinamica' (Sin variables)
 app.post('/api/masivo-plantilla', async (req, res) => {
     const { nombrePlantilla = 'notificacion_dinamica' } = req.body;
 
@@ -363,6 +382,8 @@ app.post('/api/masivo-plantilla', async (req, res) => {
 
         let exitosos = 0;
         let fallidos = 0;
+
+        console.log(`🚀 Iniciando difusión masiva con plantilla '${nombrePlantilla}' a ${contactos.length} contactos...`);
 
         for (let contacto of contactos) {
             const numeroLimpio = contacto.numero.trim();
@@ -387,7 +408,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                                             link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop'
                                         }
                                     }
-                                }
+                                ]
                             }
                         ]
                     }
@@ -426,13 +447,16 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                 await new Promise(resolve => setTimeout(resolve, 1200));
 
             } catch (err) {
+                console.error(`❌ Error enviando plantilla a ${numeroLimpio}:`, err.response?.data || err.message);
                 fallidos++;
             }
         }
 
+        console.log(`✅ Difusión masiva finalizada. Exitosos: ${exitosos}, Fallidos: ${fallidos}`);
         res.json({ success: true, exitosos, fallidos });
 
     } catch (error) {
+        console.error("❌ Error general en difusión masiva con plantilla:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -505,6 +529,7 @@ async function enviarMensajeWhatsApp(numeroDestino, texto, tipo, mediaId) {
         }
     });
 
+    console.log(`🚀 Mensaje (${tipo}) enviado con éxito a ${numeroDestino}`);
     return response.data;
 }
 
