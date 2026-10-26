@@ -320,7 +320,7 @@ app.post('/api/enviar', async (req, res) => {
     }
 });
 
-// 5. ENDPOINT: Prueba unitaria de plantilla 'notificacion_dinamica'
+// 5. ENDPOINT: Prueba unitaria de plantilla 'notificacion_dinamica' (Sin variables)
 app.post('/api/probar-plantilla-unica', async (req, res) => {
     const { numero } = req.body;
 
@@ -348,15 +348,6 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
                                 }
                             }
                         ]
-                    },
-                    {
-                        type: 'body',
-                        parameters: [
-                            {
-                                type: 'text',
-                                text: 'Aventurero de la suerte'
-                            }
-                        ]
                     }
                 ]
             }
@@ -377,7 +368,7 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
     }
 });
 
-// 6. ENDPOINT: Difusión Masiva utilizando la Plantilla 'notificacion_dinamica'
+// 6. ENDPOINT: Difusión Masiva utilizando la Plantilla 'notificacion_dinamica' (Sin variables)
 app.post('/api/masivo-plantilla', async (req, res) => {
     const { nombrePlantilla = 'notificacion_dinamica' } = req.body;
 
@@ -396,7 +387,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
 
         for (let contacto of contactos) {
             const numeroLimpio = contacto.numero.trim();
-            const nombreCliente = contacto.nombre || 'Aventurero de la suerte';
+            const nombreCliente = contacto.nombre || 'Cliente';
 
             try {
                 const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
@@ -417,16 +408,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                                             link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop'
                                         }
                                     }
-                                ]
-                            },
-                            {
-                                type: 'body',
-                                parameters: [
-                                    {
-                                        type: 'text',
-                                        text: nombreCliente
-                                    }
-                                ]
+                                }
                             }
                         ]
                     }
@@ -462,7 +444,6 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                 });
 
                 exitosos++;
-                // Pausa de 1.2 segundos para proteger tu número de bloqueos
                 await new Promise(resolve => setTimeout(resolve, 1200));
 
             } catch (err) {
