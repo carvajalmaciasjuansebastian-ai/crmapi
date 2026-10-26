@@ -58,7 +58,6 @@ async function initDB() {
             );
         `);
 
-        // Asegurar columnas si ya existían las tablas
         await pool.query(`
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS nombre VARCHAR(255);
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS ultimo_mensaje TEXT;
@@ -321,7 +320,7 @@ app.post('/api/enviar', async (req, res) => {
     }
 });
 
-// 5. NUEVO ENDPOINT: Prueba unitaria de plantilla a un solo número
+// 5. ENDPOINT: Prueba unitaria de plantilla 'notificacion_dinamica'
 app.post('/api/probar-plantilla-unica', async (req, res) => {
     const { numero } = req.body;
 
@@ -336,7 +335,7 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
             to: numero.trim(),
             type: 'template',
             template: {
-                name: 'dinamica_dos_cifras',
+                name: 'notificacion_dinamica',
                 language: { code: 'es_CO' },
                 components: [
                     {
@@ -347,6 +346,15 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
                                 image: {
                                     link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop'
                                 }
+                            }
+                        ]
+                    },
+                    {
+                        type: 'body',
+                        parameters: [
+                            {
+                                type: 'text',
+                                text: 'Aventurero de la suerte'
                             }
                         ]
                     }
@@ -361,7 +369,7 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
             }
         });
 
-        console.log(`✅ Plantilla de prueba enviada a ${numero}`);
+        console.log(`✅ Plantilla 'notificacion_dinamica' enviada a ${numero}`);
         res.json({ success: true, data: response.data });
     } catch (err) {
         console.error(`❌ Error al probar plantilla con ${numero}:`, err.response?.data || err.message);
@@ -369,9 +377,9 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
     }
 });
 
-// 6. ENDPOINT: Difusión Masiva utilizando la Plantilla Aprobada de Meta
+// 6. ENDPOINT: Difusión Masiva utilizando la Plantilla 'notificacion_dinamica'
 app.post('/api/masivo-plantilla', async (req, res) => {
-    const { nombrePlantilla = 'dinamica_dos_cifras' } = req.body;
+    const { nombrePlantilla = 'notificacion_dinamica' } = req.body;
 
     try {
         const resultadoContactos = await pool.query('SELECT numero, nombre FROM contactos');
@@ -388,7 +396,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
 
         for (let contacto of contactos) {
             const numeroLimpio = contacto.numero.trim();
-            const nombreCliente = contacto.nombre || 'Cliente';
+            const nombreCliente = contacto.nombre || 'Aventurero de la suerte';
 
             try {
                 const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
@@ -408,6 +416,15 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                                         image: {
                                             link: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop'
                                         }
+                                    }
+                                ]
+                            },
+                            {
+                                type: 'body',
+                                parameters: [
+                                    {
+                                        type: 'text',
+                                        text: nombreCliente
                                     }
                                 ]
                             }
@@ -445,7 +462,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
                 });
 
                 exitosos++;
-                // Pausa de 1.2 segundos para proteger tu número ante restricciones de la API de Meta
+                // Pausa de 1.2 segundos para proteger tu número de bloqueos
                 await new Promise(resolve => setTimeout(resolve, 1200));
 
             } catch (err) {
