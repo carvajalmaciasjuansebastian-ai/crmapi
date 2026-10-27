@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -27,8 +26,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'tu_token_de_verificacion';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Configuración de la plantilla aprobada en Meta.
-// Puedes definir estas variables en Render si necesitas modificarlas.
+// Configuración de la plantilla aprobada en Meta (Imagen forzada en JPG para evitar error WebP)
 const TEMPLATE_NAME =
     process.env.WHATSAPP_TEMPLATE_NAME || 'notificacion_dinamica';
 
@@ -37,10 +35,9 @@ const TEMPLATE_LANGUAGE =
 
 const TEMPLATE_HEADER_IMAGE_URL =
     process.env.WHATSAPP_TEMPLATE_IMAGE_URL ||
-    'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000&auto=format&fit=crop';
+    'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?auto=format&fit=crop&w=1000&q=80';
 
 // Normalizar el teléfono a formato internacional solo con dígitos.
-// Ejemplo Colombia: 573001234567
 function normalizarNumeroWhatsApp(numero) {
     return String(numero || '').replace(/\D/g, '');
 }
@@ -54,7 +51,6 @@ function validarConfiguracionWhatsApp() {
 }
 
 // Construye el payload de la plantilla.
-// Este formato presupone encabezado de imagen y una variable de texto en el cuerpo.
 function crearPayloadPlantilla(numero, nombre) {
     return {
         messaging_product: 'whatsapp',
@@ -218,7 +214,6 @@ app.get('/webhook', (req, res) => {
 
 // 2. Recepción de mensajes entrantes y estados de entrega.
 app.post('/webhook', async (req, res) => {
-    // Responder rápidamente a Meta para confirmar recepción del webhook.
     res.status(200).send('EVENT_RECEIVED');
 
     const body = req.body;
@@ -240,7 +235,6 @@ app.post('/webhook', async (req, res) => {
                     value.contacts[0].profile?.name || 'Sin Nombre';
             }
 
-            // Procesar mensajes entrantes.
             if (value.messages && value.messages.length > 0) {
                 for (const mensaje of value.messages) {
                     const remitente = mensaje.from;
@@ -295,8 +289,6 @@ app.post('/webhook', async (req, res) => {
                             [remitente, tipo, contenido]
                         );
 
-                        // Enviar bienvenida automática si está activada
-                        // y se trata de un contacto nuevo.
                         if (esContactoNuevo) {
                             const configRes = await pool.query(
                                 'SELECT valor FROM configuracion WHERE clave = $1',
@@ -387,9 +379,6 @@ app.post('/webhook', async (req, res) => {
                 }
             }
 
-            // IMPORTANTE:
-            // Los estados llegan por value.statuses, incluso en eventos
-            // donde no existe value.messages.
             if (value.statuses && value.statuses.length > 0) {
                 for (const estado of value.statuses) {
                     const detalleEstado = {
@@ -763,7 +752,6 @@ app.post('/api/masivo-plantilla', async (req, res) => {
 
                 aceptados++;
 
-                // Pausa para no enviar todas las solicitudes simultáneamente.
                 await new Promise(resolve => setTimeout(resolve, 1200));
             } catch (err) {
                 const detalle = err.response?.data || err.message;
@@ -783,7 +771,7 @@ app.post('/api/masivo-plantilla', async (req, res) => {
         }
 
         console.log(
-            `🏁 Difusión terminada. Aceptados por Meta: ${aceptados}; fallidos en solicitud: ${fallidos}. La entrega se confirma por webhook.`
+            `🏁 Difusión terminada. Aceptados por Meta: ${aceptados}; fallidos en solicitud: ${fallidos}.`
         );
 
         return res.json({
