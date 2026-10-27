@@ -26,7 +26,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'tu_token_de_verificacion';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Configuración de la plantilla aprobada en Meta (con el flyer oficial de El Duende de las Dos Cifras)
+// Configuración de la plantilla aprobada en Meta (con la imagen oficial en el repositorio de GitHub)
 const TEMPLATE_NAME =
     process.env.WHATSAPP_TEMPLATE_NAME || 'notificacion_dinamica';
 
@@ -35,7 +35,7 @@ const TEMPLATE_LANGUAGE =
 
 const TEMPLATE_HEADER_IMAGE_URL =
     process.env.WHATSAPP_TEMPLATE_IMAGE_URL ||
-    'https://i.ibb.co/sjd0RWv7/El-Duende-de-las-Dos-Cifras.png';
+    'https://raw.githubusercontent.com/carvajalmaciasjuansebastian-ai/crmapi/main/El%20Duende%20de%20las%20Dos%20Cifras.png';
 
 // Normalizar el teléfono a formato internacional solo con dígitos.
 function normalizarNumeroWhatsApp(numero) {
