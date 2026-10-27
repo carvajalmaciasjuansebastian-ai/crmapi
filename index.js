@@ -26,7 +26,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'tu_token_de_verificacion';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Configuración de la plantilla aprobada en Meta (Imagen forzada en JPG para evitar error WebP)
+// Configuración de la plantilla aprobada en Meta (URL en JPG real para evitar error WebP)
 const TEMPLATE_NAME =
     process.env.WHATSAPP_TEMPLATE_NAME || 'notificacion_dinamica';
 
@@ -35,7 +35,7 @@ const TEMPLATE_LANGUAGE =
 
 const TEMPLATE_HEADER_IMAGE_URL =
     process.env.WHATSAPP_TEMPLATE_IMAGE_URL ||
-    'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?auto=format&fit=crop&w=1000&q=80';
+    'https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Hopetoun_falls.jpg/800px-Hopetoun_falls.jpg';
 
 // Normalizar el teléfono a formato internacional solo con dígitos.
 function normalizarNumeroWhatsApp(numero) {
