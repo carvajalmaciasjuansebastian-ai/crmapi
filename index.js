@@ -26,7 +26,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'tu_token_de_verificacion';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Configuración de la plantilla aprobada en Meta (con la imagen oficial en el repositorio de GitHub)
+// Configuración de la plantilla aprobada en Meta (con el flyer en el repositorio de GitHub)
 const TEMPLATE_NAME =
     process.env.WHATSAPP_TEMPLATE_NAME || 'notificacion_dinamica';
 
@@ -665,7 +665,7 @@ app.post('/api/probar-plantilla-unica', async (req, res) => {
     }
 });
 
-// 6. Difusión masiva con la plantilla aprobada.
+// 6. Difusión masiva con la plantilla aprobada (desde base de datos).
 app.post('/api/masivo-plantilla', async (req, res) => {
     const nombrePlantillaSolicitado = String(
         req.body?.nombrePlantilla || TEMPLATE_NAME
@@ -796,6 +796,103 @@ app.post('/api/masivo-plantilla', async (req, res) => {
             success: false,
             error: detalle
         });
+    }
+});
+
+// 7. Difusión masiva personalizada con lista pegada en el CRM y pausas aleatorias de seguridad.
+app.post('/api/masivo-personalizado', async (req, res) => {
+    const { numeros } = req.body;
+
+    if (!Array.isArray(numeros) || numeros.length === 0) {
+        return res.status(400).json({
+            success: false,
+            error: 'No se recibieron números válidos para la difusión.'
+        });
+    }
+
+    try {
+        validarConfiguracionWhatsApp();
+
+        let aceptados = 0;
+        let fallidos = 0;
+        const errores = [];
+
+        console.log(
+            `🚀 Iniciando difusión personalizada de '${TEMPLATE_NAME}' a ${numeros.length} números.`
+        );
+
+        for (const numeroCrudo of numeros) {
+            const numero = normalizarNumeroWhatsApp(numeroCrudo);
+
+            if (!/^\d{10,15}$/.test(numero)) {
+                fallidos++;
+                continue;
+            }
+
+            try {
+                const resultado = await enviarPlantillaWhatsApp(
+                    numero,
+                    'Aventurero de la suerte'
+                );
+
+                const textoGuardar =
+                    `📋 [Plantilla Masiva ${TEMPLATE_NAME}] ID: ${resultado.messageId || 'sin ID'}`;
+
+                await pool.query(
+                    `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fecha)
+                     VALUES ($1, $1, $2, TRUE, NOW())
+                     ON CONFLICT (numero) DO UPDATE SET
+                        ultimo_mensaje = EXCLUDED.ultimo_mensaje,
+                        fecha = NOW()`,
+                    [numero, textoGuardar]
+                );
+
+                await pool.query(
+                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha)
+                     VALUES ($1, 'saliente', 'template', $2, NOW())`,
+                    [numero, textoGuardar]
+                );
+
+                io.emit('nuevo_mensaje', {
+                    nombre: numero,
+                    numero,
+                    mensaje: textoGuardar,
+                    tipo: 'template',
+                    tipo_envio: 'saliente',
+                    status: 'sent',
+                    messageId: resultado.messageId,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                });
+
+                aceptados++;
+
+                // 🛡️ PAUSA ALEATORIA DE SEGURIDAD (Entre 1.5 y 3.2 segundos)
+                const pausaAleatoria = Math.floor(Math.random() * (3200 - 1500 + 1)) + 1500;
+                await new Promise(resolve => setTimeout(resolve, pausaAleatoria));
+
+            } catch (err) {
+                const detalle = err.response?.data || err.message;
+                console.error(`❌ ERROR PLANTILLA PARA ${numero}:`, JSON.stringify(detalle));
+                fallidos++;
+                errores.push({ numero, error: detalle });
+            }
+        }
+
+        console.log(`🏁 Difusión personalizada terminada. Aceptados: ${aceptados}; Fallidos: ${fallidos}.`);
+
+        return res.json({
+            success: true,
+            aceptados,
+            exitosos: aceptados,
+            fallidos,
+            total: numeros.length,
+            errores: errores.slice(0, 20)
+        });
+
+    } catch (error) {
+        const detalle = error.response?.data || error.message;
+        console.error('❌ ERROR GENERAL DIFUSIÓN PERSONALIZADA:', JSON.stringify(detalle));
+        return res.status(500).json({ success: false, error: detalle });
     }
 });
 
