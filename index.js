@@ -1,10 +1,11 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http'); // Mantendremos la corrección del http aquí
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const P = require('pino');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -33,7 +34,7 @@ let sock;
 let qrCodeGlobal = '';
 let connectionStatus = 'disconnected';
 
-// Inicialización de la Base de Datos para Baileys y CRM
+// Inicialización de la Base de Datos
 async function initDB() {
     try {
         await pool.query(`
@@ -62,8 +63,9 @@ async function initDB() {
 }
 initDB();
 
-// Iniciar la conexión de WhatsApp con Baileys
+// Iniciar la conexión de WhatsApp con Baileys y limpieza de sesión corrupta
 async function startWhatsApp() {
+    // Si hay un cierre por sesión inválida, podemos limpiar opcionalmente la auth
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
@@ -79,14 +81,23 @@ async function startWhatsApp() {
         if (qr) {
             qrCodeGlobal = qr;
             connectionStatus = 'qr';
-            console.log('📌 Nuevo código QR generado. Escanéalo en la interfaz.');
+            console.log('📌 Nuevo código QR generado. Escanéalo en la interfaz del CRM.');
         }
         if (connection === 'close') {
             connectionStatus = 'disconnected';
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('🔄 Conexión cerrada. Reconectando...', shouldReconnect);
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`🔄 Conexión cerrada (Código: ${statusCode}). Reconectando...`, shouldReconnect);
+            
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log('⚠️ Sesión cerrada desde el teléfono. Limpiando credenciales antiguas...');
+                try {
+                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+                } catch (e) {}
+            }
+
             if (shouldReconnect) {
-                startWhatsApp();
+                setTimeout(startWhatsApp, 3000);
             }
         } else if (connection === 'open') {
             connectionStatus = 'connected';
@@ -101,14 +112,13 @@ async function startWhatsApp() {
         for (const msg of m.messages) {
             if (!msg.message || msg.key.fromMe) continue;
 
-            const remitente = msg.key.remoteJid; // ej: 573042186226@s.whatsapp.net
+            const remitente = msg.key.remoteJid;
             const numeroLimpio = remitente.replace(/\D/g, '');
             const textoMensaje = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
             const nombreContacto = msg.pushName || 'Aventurero';
 
             console.log(`📩 Mensaje entrante de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
 
-            // Guardar o actualizar contacto y mensaje en DB
             try {
                 let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
                 let faseActual = 0;
@@ -140,11 +150,10 @@ async function startWhatsApp() {
                     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 });
 
-                // LÓGICA DEL BOT EN DOS PASOS CON PAUSAS HUMANIZADAS (4-8 SEGUNDOS)
+                // Pausa humanizada aleatoria entre 4 y 8 segundos
                 const delayHumano = Math.floor(Math.random() * (8000 - 4000 + 1)) + 4000;
 
                 if (faseActual === 0) {
-                    // PASO 1: Saludo variable y pedir el nombre
                     const saludos = [
                         `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
                         `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`,
@@ -171,7 +180,6 @@ async function startWhatsApp() {
                     }, delayHumano);
 
                 } else if (faseActual === 1) {
-                    // PASO 2: Guardar nombre, entregar reglas y enlace del grupo
                     const nombreUsuario = textoMensaje.trim();
                     await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
 
@@ -213,7 +221,7 @@ https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
 
 startWhatsApp();
 
-// Endpoints de la API para el CRM
+// Endpoints de la API
 app.get('/api/status', (req, res) => {
     res.json({ status: connectionStatus, qr: qrCodeGlobal });
 });
