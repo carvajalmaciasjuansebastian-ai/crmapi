@@ -1,5 +1,5 @@
 const express = require('express');
-const http = http = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -72,9 +72,9 @@ async function startWhatsApp() {
         printQRInTerminal: true
     });
 
-    sock.udarstven = saveCreds;
+    sock.ev.on('creds.update', saveCreds);
 
-    sock.on('connection.update', (update) => {
+    sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
             qrCodeGlobal = qr;
@@ -95,7 +95,7 @@ async function startWhatsApp() {
         }
     });
 
-    sock.on('messages.upsert', async (m) => {
+    sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
         
         for (const msg of m.messages) {
