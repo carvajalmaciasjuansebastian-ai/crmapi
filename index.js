@@ -1,5 +1,5 @@
 const express = require('express');
-const http = http = require('http'); // Mantendremos la corrección del http aquí
+const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -24,7 +24,6 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 10000;
 
-// Configuración de PostgreSQL
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
@@ -34,7 +33,6 @@ let sock;
 let qrCodeGlobal = '';
 let connectionStatus = 'disconnected';
 
-// Inicialización de la Base de Datos
 async function initDB() {
     try {
         await pool.query(`
@@ -63,41 +61,50 @@ async function initDB() {
 }
 initDB();
 
-// Iniciar la conexión de WhatsApp con Baileys y limpieza de sesión corrupta
 async function startWhatsApp() {
-    // Si hay un cierre por sesión inválida, podemos limpiar opcionalmente la auth
+    // Limpiamos sesión previa corrupta para forzar un QR limpio
+    if (connectionStatus === 'disconnected' && fs.existsSync('auth_info_baileys')) {
+        try {
+            // Comenta la siguiente línea si quieres mantener la sesión guardada al reiniciar
+            // fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+        } catch (e) {}
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
         logger: P({ level: 'silent' }),
-        printQRInTerminal: true
+        printQRInTerminal: false // Lo manejamos por Web/Socket
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
+        
         if (qr) {
             qrCodeGlobal = qr;
             connectionStatus = 'qr';
-            console.log('📌 Nuevo código QR generado. Escanéalo en la interfaz del CRM.');
+            console.log('📌 NUEVO QR GENERADO. Abre tu CRM para escanearlo.');
         }
+
         if (connection === 'close') {
             connectionStatus = 'disconnected';
+            qrCodeGlobal = '';
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log(`🔄 Conexión cerrada (Código: ${statusCode}). Reconectando...`, shouldReconnect);
-            
+            console.log(`🔄 Conexión cerrada (Código: ${statusCode}). Reconectando en 5 segundos...`);
+
             if (statusCode === DisconnectReason.loggedOut) {
-                console.log('⚠️ Sesión cerrada desde el teléfono. Limpiando credenciales antiguas...');
+                console.log('⚠️ Sesión cerrada. Limpiando credenciales...');
                 try {
                     fs.rmSync('auth_info_baileys', { recursive: true, force: true });
                 } catch (e) {}
             }
 
             if (shouldReconnect) {
-                setTimeout(startWhatsApp, 3000);
+                setTimeout(startWhatsApp, 5000);
             }
         } else if (connection === 'open') {
             connectionStatus = 'connected';
@@ -150,7 +157,6 @@ async function startWhatsApp() {
                     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 });
 
-                // Pausa humanizada aleatoria entre 4 y 8 segundos
                 const delayHumano = Math.floor(Math.random() * (8000 - 4000 + 1)) + 4000;
 
                 if (faseActual === 0) {
@@ -213,7 +219,7 @@ https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
                 }
 
             } catch (dbErr) {
-                console.error('❌ Error procesando mensaje con Baileys:', dbErr.message);
+                console.error('❌ Error procesando mensaje:', dbErr.message);
             }
         }
     });
@@ -221,7 +227,6 @@ https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
 
 startWhatsApp();
 
-// Endpoints de la API
 app.get('/api/status', (req, res) => {
     res.json({ status: connectionStatus, qr: qrCodeGlobal });
 });
@@ -258,4 +263,3 @@ app.post('/api/enviar', async (req, res) => {
 server.listen(PORT, () => {
     console.log(`🚀 Servidor CRM con Baileys corriendo en el puerto ${PORT}`);
 });
-
