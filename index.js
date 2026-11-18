@@ -67,21 +67,66 @@ initDB();
 
 async function enviarMensajeMeta(destinatario, texto) {
     try {
-        await axios.post(
-            `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: "whatsapp",
-                to: destinatario,
-                type: "text",
-                text: { body: texto }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    'Content-Type': 'application/json'
+        // Detecta si el mensaje contiene un enlace de invitación a grupo de WhatsApp
+        const matchLink = texto.match(/https:\/\/chat\.whatsapp\.com\/[^\s]+/);
+
+        if (matchLink) {
+            const urlGrupo = matchLink[0];
+            // Elimina la URL cruda del texto para que el cliente no vea enlaces sospechosos
+            const textoLimpio = texto
+                .replace(urlGrupo, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim()
+                .substring(0, 1020);
+
+            await axios.post(
+                `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+                {
+                    messaging_product: "whatsapp",
+                    recipient_type: "individual",
+                    to: destinatario,
+                    type: "interactive",
+                    interactive: {
+                        type: "cta_url",
+                        body: {
+                            text: textoLimpio
+                        },
+                        action: {
+                            name: "cta_url",
+                            parameters: {
+                                display_text: "Unirme al grupo oficial",
+                                url: urlGrupo
+                            }
+                        }
+                    }
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
                 }
-            }
-        );
+            );
+        } else {
+            await axios.post(
+                `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+                {
+                    messaging_product: "whatsapp",
+                    to: destinatario,
+                    type: "text",
+                    text: {
+                        body: texto,
+                        preview_url: true
+                    }
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+        }
     } catch (err) {
         console.error('❌ Error enviando mensaje por Meta Cloud API:', err.response?.data || err.message);
     }
