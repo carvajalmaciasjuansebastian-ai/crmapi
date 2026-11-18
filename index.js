@@ -67,26 +67,71 @@ initDB();
 
 async function enviarMensajeMeta(destinatario, texto) {
     try {
-        await axios.post(
-            `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: "whatsapp",
-                to: destinatario,
-                type: "text",
-                text: { 
-                    body: texto,
-                    preview_url: true // Activa la vista previa de forma nativa permitida por Meta
-                }
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
+        // Buscamos si en el texto que guardaste en el CRM viene un enlace de WhatsApp
+        const matchLink = texto.match(/https:\/\/chat\.whatsapp\.com\/[^\s]+/);
+
+        if (matchLink) {
+            const urlGrupo = matchLink[0];
+            // Quitamos el link largo del texto principal para que quede limpio y ordenado
+            let textoLimpio = texto.replace(urlGrupo, '').trim();
+
+            // Límite estricto de Meta para el cuerpo del mensaje interactivo (1024 caracteres)
+            if (textoLimpio.length > 1020) {
+                textoLimpio = textoLimpio.substring(0, 1020);
             }
-        );
+
+            // Enviamos el mensaje con el botón nativo oficial de Meta
+            await axios.post(
+                `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+                {
+                    messaging_product: "whatsapp",
+                    recipient_type: "individual",
+                    to: destinatario,
+                    type: "interactive",
+                    interactive: {
+                        type: "cta_url",
+                        body: {
+                            text: textoLimpio
+                        },
+                        action: {
+                            name: "cta_url",
+                            parameters: {
+                                display_text: "Ver grupo", // 👈 El texto exacto del botón que querías
+                                url: urlGrupo
+                            }
+                        }
+                    }
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+        } else {
+            // Si el mensaje no tiene link, se manda como texto normal con vista previa
+            await axios.post(
+                `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+                {
+                    messaging_product: "whatsapp",
+                    to: destinatario,
+                    type: "text",
+                    text: { 
+                        body: texto,
+                        preview_url: true 
+                    }
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+        }
     } catch (err) {
-        console.error('❌ Error enviando mensaje por Meta Cloud API:', err.response?.data || err.message);
+        console.error('❌ Error enviando mensaje interactivo con botón:', err.response?.data || err.message);
     }
 }
 
