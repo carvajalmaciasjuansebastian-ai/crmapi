@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -27,7 +27,6 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Credenciales de Meta Cloud API (las configuras en las variables de entorno de Render)
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
@@ -59,7 +58,6 @@ async function initDB() {
 }
 initDB();
 
-// Función auxiliar para enviar mensajes usando la Cloud API oficial de Meta
 async function enviarMensajeMeta(destinatario, texto) {
     try {
         await axios.post(
@@ -82,7 +80,6 @@ async function enviarMensajeMeta(destinatario, texto) {
     }
 }
 
-// 1. Ruta GET para que Meta valide el Webhook
 app.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -100,7 +97,6 @@ app.get('/webhook', (req, res) => {
     }
 });
 
-// 2. Ruta POST para recibir los mensajes entrantes de Meta
 app.post('/webhook', async (req, res) => {
     const body = req.body;
 
@@ -110,14 +106,14 @@ app.post('/webhook', async (req, res) => {
                 for (const change of entry.changes) {
                     if (change.value && change.value.messages) {
                         const msgObj = change.value.messages[0];
-                        const numeroLimpio = msgObj.from; // Número del cliente
+                        const numeroLimpio = msgObj.from;
                         const textoMensaje = msgObj.text?.body || '';
                         
-                        // Obtener nombre del contacto si viene en la metadata de Meta
                         let nombreContacto = change.value.contacts?.[0]?.profile?.name || 'Aventurero';
 
                         console.log(`📩 Mensaje entrante Cloud API de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
 
+                        // 1. Buscar o registrar el contacto PRIMERO para obtener su fase real actual
                         let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
                         let faseActual = 0;
 
@@ -126,10 +122,10 @@ app.post('/webhook', async (req, res) => {
                                 `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 0, NOW())`,
                                 [numeroLimpio, nombreContacto, textoMensaje]
                             );
+                            faseActual = 0;
                         } else {
-                            faseActual = contactoRes.rows[0].fase_bot || 0;
-                            // Si ya tenía nombre guardado, lo respetamos, si no, actualizamos
-                            if (contactoRes.rows[0].nombre) {
+                            faseActual = contactoRes.rows[0].fase_bot !== null ? Number(contactoRes.rows[0].fase_bot) : 0;
+                            if (contactoRes.rows[0].nombre && contactoRes.rows[0].nombre !== 'Aventurero') {
                                 nombreContacto = contactoRes.rows[0].nombre;
                             }
                             await pool.query(
@@ -138,13 +134,13 @@ app.post('/webhook', async (req, res) => {
                             );
                         }
 
-                        // Guardar mensaje entrante
+                        // 2. Guardar el mensaje entrante en la base de datos
                         await pool.query(
                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
                             [numeroLimpio, textoMensaje]
                         );
 
-                        // Emitir al CRM web en tiempo real
+                        // 3. Emitir el mensaje entrante al CRM web via Socket.io
                         io.emit('nuevo_mensaje', {
                             nombre: nombreContacto,
                             numero: numeroLimpio,
@@ -154,20 +150,22 @@ app.post('/webhook', async (req, res) => {
                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         });
 
-                        const delayHumano = Math.floor(Math.random() * (5000 - 2000 + 1)) + 2000;
+                        const delayHumano = Math.floor(Math.random() * (3000 - 1000 + 1)) + 1000;
 
-                        // Lógica del bot (Fase 0 y Fase 1)
+                        // 4. Lógica de fases evaluada de manera estricta según la base de datos
                         if (faseActual === 0) {
                             const saludos = [
                                 `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
                                 `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`,
-                                `¡Hola! Qué bueno tenerte por aquí. ¿Cuál es tu nombre?`
+                                `¡Hola! Qué bueno tenerte por aquí. ¿Cuál estu nombre?`
                             ];
                             const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
 
+                            // Avanzamos la fase inmediatamente a 1 para evitar bucles si entra otro mensaje rápido
+                            await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
+
                             setTimeout(async () => {
                                 await enviarMensajeMeta(numeroLimpio, saludoElegido);
-                                await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
                                 
                                 await pool.query(
                                     `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
@@ -185,6 +183,8 @@ app.post('/webhook', async (req, res) => {
 
                         } else if (faseActual === 1) {
                             const nombreUsuario = textoMensaje.trim();
+                            
+                            // Guardamos el nombre y pasamos la fase a 2 para que no vuelva a pedir el nombre
                             await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
 
                             const mensajeReglas = `¡Mucho gusto, ${nombreUsuario}! 🎉 Te explico brevemente cómo funcionamos:
@@ -229,7 +229,6 @@ https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
 });
 
 app.get('/api/status', (req, res) => {
-    // Como es Cloud API, el estado operativo depende de que el token y webhook estén activos
     res.json({ status: 'connected', qr: '' });
 });
 
