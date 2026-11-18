@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -67,8 +67,7 @@ async function startWhatsApp() {
     sock = makeWASocket({
         auth: state,
         logger: P({ level: 'silent' }),
-        printQRInTerminal: false,
-        version: [2, 3000, 1015901307] // 👈 SOLUCIÓN AL ERROR 405 DE BAILEYS
+        printQRInTerminal: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -90,7 +89,7 @@ async function startWhatsApp() {
             console.log(`🔄 Conexión cerrada (Código: ${statusCode}). Reconectando en 5 segundos...`);
 
             if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
-                console.log('⚠️ Sesión cerrada o error 405. Limpiando credenciales antiguas...');
+                console.log('⚠️ Sesión cerrada o error de versión. Limpiando credenciales antiguas...');
                 try {
                     fs.rmSync('auth_info_baileys', { recursive: true, force: true });
                 } catch (e) {}
