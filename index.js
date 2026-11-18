@@ -42,7 +42,6 @@ async function initDB() {
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            -- Asegurar que la columna fase_bot exista si la tabla ya estaba creada de antes
             ALTER TABLE contactos ADD COLUMN IF NOT EXISTS fase_bot INT DEFAULT 0;
 
             CREATE TABLE IF NOT EXISTS mensajes (
@@ -112,22 +111,27 @@ app.post('/webhook', async (req, res) => {
                         const numeroLimpio = msgObj.from;
                         const textoMensaje = msgObj.text?.body || '';
                         
+                        // Ignorar mensajes que vengan del propio número de la API
+                        if (numeroLimpio === PHONE_NUMBER_ID || numeroLimpio === "573042187204") {
+                            continue;
+                        }
+
                         let nombreContacto = change.value.contacts?.[0]?.profile?.name || 'Aventurero';
 
                         console.log(`📩 Mensaje entrante Cloud API de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
 
-                        // 1. Buscar o registrar el contacto PRIMERO para obtener su fase real actual
                         let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
                         let faseActual = 0;
 
                         if (contactoRes.rows.length === 0) {
+                            // Creamos el contacto y lo pasamos a fase 1 de inmediato para que no vuelva a entrar en fase 0
                             await pool.query(
-                                `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 0, NOW())`,
+                                `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 1, NOW())`,
                                 [numeroLimpio, nombreContacto, textoMensaje]
                             );
-                            faseActual = 0;
+                            faseActual = 0; // Marcamos que es su primer mensaje absoluto
                         } else {
-                            faseActual = contactoRes.rows[0].fase_bot !== null ? Number(contactoRes.rows[0].fase_bot) : 0;
+                            faseActual = contactoRes.rows[0].fase_bot !== null ? Number(contactoRes.rows[0].fase_bot) : 1;
                             if (contactoRes.rows[0].nombre && contactoRes.rows[0].nombre !== 'Aventurero') {
                                 nombreContacto = contactoRes.rows[0].nombre;
                             }
@@ -137,13 +141,13 @@ app.post('/webhook', async (req, res) => {
                             );
                         }
 
-                        // 2. Guardar el mensaje entrante en la base de datos
+                        // Guardar mensaje entrante en base de datos
                         await pool.query(
                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
                             [numeroLimpio, textoMensaje]
                         );
 
-                        // 3. Emitir el mensaje entrante al CRM web via Socket.io
+                        // Emitir al CRM web en tiempo real
                         io.emit('nuevo_mensaje', {
                             nombre: nombreContacto,
                             numero: numeroLimpio,
@@ -153,19 +157,15 @@ app.post('/webhook', async (req, res) => {
                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         });
 
-                        const delayHumano = Math.floor(Math.random() * (3000 - 1000 + 1)) + 1000;
+                        const delayHumano = 1000;
 
-                        // 4. Lógica de fases evaluada de manera estricta según la base de datos
+                        // EL BOT SOLO RESPONDE UNA ÚNICA VEZ (Fase 0)
                         if (faseActual === 0) {
                             const saludos = [
                                 `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
-                                `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`,
-                                `¡Hola! Qué bueno tenerte por aquí. ¿Cuál es tu nombre?`
+                                `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`
                             ];
                             const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
-
-                            // Avanzamos la fase inmediatamente a 1 para evitar bucles si entra otro mensaje rápido
-                            await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
 
                             setTimeout(async () => {
                                 await enviarMensajeMeta(numeroLimpio, saludoElegido);
@@ -184,39 +184,9 @@ app.post('/webhook', async (req, res) => {
                                 });
                             }, delayHumano);
 
-                        } else if (faseActual === 1) {
-                            const nombreUsuario = textoMensaje.trim();
-                            
-                            // Guardamos el nombre y pasamos la fase a 2 para que no vuelva a pedir el nombre
-                            await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
-
-                            const mensajeReglas = `¡Mucho gusto, ${nombreUsuario}! 🎉 Te explico brevemente cómo funcionamos:
-
-1️⃣ Con un número de **dos cifras** tienes **hasta 3 oportunidades** de participar y ganar.
-2️⃣ **Garantía Total:** Si tu número coincide con el último dígito, ¡te devolvemos tu dinero y recuperas tu ticket!
-3️⃣ Toda la información de las dinámicas, elección de números y ganadores se comparte exclusivamente en nuestro grupo oficial.
-
-🔗 Únete al grupo de WhatsApp aquí mismo para comenzar:
-https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
-
-¡Te esperamos adentro! 🚀`;
-
-                            setTimeout(async () => {
-                                await enviarMensajeMeta(numeroLimpio, mensajeReglas);
-                                
-                                await pool.query(
-                                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
-                                    [numeroLimpio, mensajeReglas]
-                                );
-                                io.emit('nuevo_mensaje', {
-                                    nombre: nombreUsuario,
-                                    numero: numeroLimpio,
-                                    mensaje: mensajeReglas,
-                                    tipo: 'text',
-                                    tipo_envio: 'saliente',
-                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                                });
-                            }, delayHumano);
+                        } else {
+                            // De aquí en adelante el bot no interviene; los mensajes quedan libres para el CRM manual
+                            console.log(`ℹ️ Usuario ${numeroLimpio} ya fue atendido por el bot. Sin respuestas automáticas.`);
                         }
                     }
                 }
