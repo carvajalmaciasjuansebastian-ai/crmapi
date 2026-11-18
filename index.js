@@ -52,6 +52,11 @@ async function initDB() {
                 contenido TEXT,
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS configuracion (
+                clave VARCHAR(50) PRIMARY KEY,
+                valor TEXT
+            );
         `);
         console.log('🟢 Base de datos sincronizada y actualizada con éxito.');
     } catch (err) {
@@ -124,12 +129,11 @@ app.post('/webhook', async (req, res) => {
                         let faseActual = 0;
 
                         if (contactoRes.rows.length === 0) {
-                            // Creamos el contacto y lo pasamos a fase 1 de inmediato para que no vuelva a entrar en fase 0
                             await pool.query(
                                 `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 1, NOW())`,
                                 [numeroLimpio, nombreContacto, textoMensaje]
                             );
-                            faseActual = 0; // Marcamos que es su primer mensaje absoluto
+                            faseActual = 0;
                         } else {
                             faseActual = contactoRes.rows[0].fase_bot !== null ? Number(contactoRes.rows[0].fase_bot) : 1;
                             if (contactoRes.rows[0].nombre && contactoRes.rows[0].nombre !== 'Aventurero') {
@@ -141,7 +145,7 @@ app.post('/webhook', async (req, res) => {
                             );
                         }
 
-                        // Guardar mensaje entrante en base de datos
+                        // Guardar mensaje entrante
                         await pool.query(
                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
                             [numeroLimpio, textoMensaje]
@@ -157,36 +161,35 @@ app.post('/webhook', async (req, res) => {
                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         });
 
-                        const delayHumano = 1000;
-
-                        // EL BOT SOLO RESPONDE UNA ÚNICA VEZ (Fase 0)
+                        // Si es la primera vez que escribe (fase 0), revisar si la Auto-Bienvenida está activa en el CRM
                         if (faseActual === 0) {
-                            const saludos = [
-                                `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
-                                `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`
-                            ];
-                            const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
+                            const configRes = await pool.query('SELECT * FROM configuracion');
+                            let bienvenidaActiva = false;
+                            let bienvenidaTexto = '';
 
-                            setTimeout(async () => {
-                                await enviarMensajeMeta(numeroLimpio, saludoElegido);
-                                
-                                await pool.query(
-                                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
-                                    [numeroLimpio, saludoElegido]
-                                );
-                                io.emit('nuevo_mensaje', {
-                                    nombre: nombreContacto,
-                                    numero: numeroLimpio,
-                                    mensaje: saludoElegido,
-                                    tipo: 'text',
-                                    tipo_envio: 'saliente',
-                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                                });
-                            }, delayHumano);
+                            configRes.rows.forEach(row => {
+                                if (row.clave === 'bienvenida_activa') bienvenidaActiva = (row.valor === 'true');
+                                if (row.clave === 'bienvenida_texto') bienvenidaTexto = row.valor;
+                            });
 
-                        } else {
-                            // De aquí en adelante el bot no interviene; los mensajes quedan libres para el CRM manual
-                            console.log(`ℹ️ Usuario ${numeroLimpio} ya fue atendido por el bot. Sin respuestas automáticas.`);
+                            if (bienvenidaActiva && bienvenidaTexto.trim() !== '') {
+                                setTimeout(async () => {
+                                    await enviarMensajeMeta(numeroLimpio, bienvenidaTexto);
+                                    
+                                    await pool.query(
+                                        `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
+                                        [numeroLimpio, bienvenidaTexto]
+                                    );
+                                    io.emit('nuevo_mensaje', {
+                                        nombre: nombreContacto,
+                                        numero: numeroLimpio,
+                                        mensaje: bienvenidaTexto,
+                                        tipo: 'text',
+                                        tipo_envio: 'saliente',
+                                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                    });
+                                }, 1000);
+                            }
                         }
                     }
                 }
@@ -198,6 +201,51 @@ app.post('/webhook', async (req, res) => {
         }
     } else {
         res.sendStatus(404);
+    }
+});
+
+// Rutas de Configuración de Auto-Bienvenida para el CRM
+app.get('/api/configuracion', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM configuracion');
+        const config = {};
+        result.rows.forEach(row => {
+            config[row.clave] = row.valor;
+        });
+        res.json(config);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/configuracion', async (req, res) => {
+    const { activa, texto } = req.body;
+    try {
+        await pool.query(
+            `INSERT INTO configuracion (clave, valor) VALUES ('bienvenida_activa', $1)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor`,
+            [String(activa)]
+        );
+        await pool.query(
+            `INSERT INTO configuracion (clave, valor) VALUES ('bienvenida_texto', $1)
+             ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor`,
+            [texto || '']
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Ruta para marcar chat como leído al abrirlo en el CRM
+app.post('/api/leer', async (req, res) => {
+    const { numero } = req.body;
+    if (!numero) return res.status(400).json({ error: 'Falta número' });
+    try {
+        await pool.query('UPDATE contactos SET leido = TRUE WHERE numero = $1', [numero]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -225,6 +273,11 @@ app.post('/api/enviar', async (req, res) => {
         await pool.query(
             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
             [numero, mensaje]
+        );
+
+        await pool.query(
+            `UPDATE contactos SET ultimo_mensaje = $1, leido = TRUE, fecha = NOW() WHERE numero = $2`,
+            [mensaje, numero]
         );
 
         res.json({ success: true });
