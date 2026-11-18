@@ -1,5 +1,5 @@
 const express = require('express');
-const http = http = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -113,7 +113,6 @@ app.post('/webhook', async (req, res) => {
 
                         console.log(`📩 Mensaje entrante Cloud API de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
 
-                        // 1. Buscar o registrar el contacto PRIMERO para obtener su fase real actual
                         let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
                         let faseActual = 0;
 
@@ -134,13 +133,11 @@ app.post('/webhook', async (req, res) => {
                             );
                         }
 
-                        // 2. Guardar el mensaje entrante en la base de datos
                         await pool.query(
                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
                             [numeroLimpio, textoMensaje]
                         );
 
-                        // 3. Emitir el mensaje entrante al CRM web via Socket.io
                         io.emit('nuevo_mensaje', {
                             nombre: nombreContacto,
                             numero: numeroLimpio,
@@ -152,16 +149,14 @@ app.post('/webhook', async (req, res) => {
 
                         const delayHumano = Math.floor(Math.random() * (3000 - 1000 + 1)) + 1000;
 
-                        // 4. Lógica de fases evaluada de manera estricta según la base de datos
                         if (faseActual === 0) {
                             const saludos = [
                                 `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
                                 `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`,
-                                `¡Hola! Qué bueno tenerte por aquí. ¿Cuál estu nombre?`
+                                `¡Hola! Qué bueno tenerte por aquí. ¿Cuál es tu nombre?`
                             ];
                             const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
 
-                            // Avanzamos la fase inmediatamente a 1 para evitar bucles si entra otro mensaje rápido
                             await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
 
                             setTimeout(async () => {
@@ -184,7 +179,6 @@ app.post('/webhook', async (req, res) => {
                         } else if (faseActual === 1) {
                             const nombreUsuario = textoMensaje.trim();
                             
-                            // Guardamos el nombre y pasamos la fase a 2 para que no vuelva a pedir el nombre
                             await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
 
                             const mensajeReglas = `¡Mucho gusto, ${nombreUsuario}! 🎉 Te explico brevemente cómo funcionamos:
