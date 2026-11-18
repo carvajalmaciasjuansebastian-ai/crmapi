@@ -3,9 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const P = require('pino');
-const fs = require('fs');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -29,9 +27,9 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-let sock;
-let qrCodeGlobal = '';
-let connectionStatus = 'disconnected';
+// Credenciales de Meta Cloud API (las configuras en las variables de entorno de Render)
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 async function initDB() {
     try {
@@ -61,127 +59,135 @@ async function initDB() {
 }
 initDB();
 
-async function startWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    
-    sock = makeWASocket({
-        auth: state,
-        logger: P({ level: 'silent' }),
-        printQRInTerminal: false
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        
-        if (qr) {
-            qrCodeGlobal = qr;
-            connectionStatus = 'qr';
-            console.log('📌 NUEVO QR GENERADO. Abre tu CRM para escanearlo.');
-        }
-
-        if (connection === 'close') {
-            connectionStatus = 'disconnected';
-            qrCodeGlobal = '';
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log(`🔄 Conexión cerrada (Código: ${statusCode}). Reconectando en 5 segundos...`);
-
-            if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
-                console.log('⚠️ Sesión cerrada o error de versión. Limpiando credenciales antiguas...');
-                try {
-                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
-                } catch (e) {}
-            }
-
-            if (shouldReconnect) {
-                setTimeout(startWhatsApp, 5000);
-            }
-        } else if (connection === 'open') {
-            connectionStatus = 'connected';
-            qrCodeGlobal = '';
-            console.log('✅ ¡WhatsApp conectado exitosamente mediante Baileys!');
-        }
-    });
-
-    sock.ev.on('messages.upsert', async (m) => {
-        if (m.type !== 'notify') return;
-        
-        for (const msg of m.messages) {
-            if (!msg.message || msg.key.fromMe) continue;
-
-            const remitente = msg.key.remoteJid;
-            const numeroLimpio = remitente.replace(/\D/g, '');
-            const textoMensaje = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-            const nombreContacto = msg.pushName || 'Aventurero';
-
-            console.log(`📩 Mensaje entrante de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
-
-            try {
-                let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
-                let faseActual = 0;
-
-                if (contactoRes.rows.length === 0) {
-                    await pool.query(
-                        `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 0, NOW())`,
-                        [numeroLimpio, nombreContacto, textoMensaje]
-                    );
-                } else {
-                    faseActual = contactoRes.rows[0].fase_bot || 0;
-                    await pool.query(
-                        `UPDATE contactos SET ultimo_mensaje = $1, leido = FALSE, fecha = NOW() WHERE numero = $2`,
-                        [textoMensaje, numeroLimpio]
-                    );
+// Función auxiliar para enviar mensajes usando la Cloud API oficial de Meta
+async function enviarMensajeMeta(destinatario, texto) {
+    try {
+        await axios.post(
+            `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: "whatsapp",
+                to: destinatario,
+                type: "text",
+                text: { body: texto }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    'Content-Type': 'application/json'
                 }
+            }
+        );
+    } catch (err) {
+        console.error('❌ Error enviando mensaje por Meta Cloud API:', err.response?.data || err.message);
+    }
+}
 
-                await pool.query(
-                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
-                    [numeroLimpio, textoMensaje]
-                );
+// 1. Ruta GET para que Meta valide el Webhook
+app.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-                io.emit('nuevo_mensaje', {
-                    nombre: nombreContacto,
-                    numero: numeroLimpio,
-                    mensaje: textoMensaje,
-                    tipo: 'text',
-                    tipo_envio: 'entrante',
-                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                });
+    if (mode && token) {
+        if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+            console.log('✅ WEBHOOK_VERIFIED con éxito por Meta.');
+            res.status(200).send(challenge);
+        } else {
+            res.sendStatus(403);
+        }
+    } else {
+        res.sendStatus(400);
+    }
+});
 
-                const delayHumano = Math.floor(Math.random() * (8000 - 4000 + 1)) + 4000;
+// 2. Ruta POST para recibir los mensajes entrantes de Meta
+app.post('/webhook', async (req, res) => {
+    const body = req.body;
 
-                if (faseActual === 0) {
-                    const saludos = [
-                        `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
-                        `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`,
-                        `¡Hola! Qué bueno tenerte por aquí. ¿Cuál es tu nombre?`
-                    ];
-                    const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
-
-                    setTimeout(async () => {
-                        await sock.sendMessage(remitente, { text: saludoElegido });
-                        await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
+    if (body.object === 'whatsapp_business_account') {
+        try {
+            for (const entry of body.entry) {
+                for (const change of entry.changes) {
+                    if (change.value && change.value.messages) {
+                        const msgObj = change.value.messages[0];
+                        const numeroLimpio = msgObj.from; // Número del cliente
+                        const textoMensaje = msgObj.text?.body || '';
                         
+                        // Obtener nombre del contacto si viene en la metadata de Meta
+                        let nombreContacto = change.value.contacts?.[0]?.profile?.name || 'Aventurero';
+
+                        console.log(`📩 Mensaje entrante Cloud API de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
+
+                        let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
+                        let faseActual = 0;
+
+                        if (contactoRes.rows.length === 0) {
+                            await pool.query(
+                                `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 0, NOW())`,
+                                [numeroLimpio, nombreContacto, textoMensaje]
+                            );
+                        } else {
+                            faseActual = contactoRes.rows[0].fase_bot || 0;
+                            // Si ya tenía nombre guardado, lo respetamos, si no, actualizamos
+                            if (contactoRes.rows[0].nombre) {
+                                nombreContacto = contactoRes.rows[0].nombre;
+                            }
+                            await pool.query(
+                                `UPDATE contactos SET ultimo_mensaje = $1, leido = FALSE, fecha = NOW() WHERE numero = $2`,
+                                [textoMensaje, numeroLimpio]
+                            );
+                        }
+
+                        // Guardar mensaje entrante
                         await pool.query(
-                            `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
-                            [numeroLimpio, saludoElegido]
+                            `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
+                            [numeroLimpio, textoMensaje]
                         );
+
+                        // Emitir al CRM web en tiempo real
                         io.emit('nuevo_mensaje', {
                             nombre: nombreContacto,
                             numero: numeroLimpio,
-                            mensaje: saludoElegido,
+                            mensaje: textoMensaje,
                             tipo: 'text',
-                            tipo_envio: 'saliente',
+                            tipo_envio: 'entrante',
                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         });
-                    }, delayHumano);
 
-                } else if (faseActual === 1) {
-                    const nombreUsuario = textoMensaje.trim();
-                    await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
+                        const delayHumano = Math.floor(Math.random() * (5000 - 2000 + 1)) + 2000;
 
-                    const mensajeReglas = `¡Mucho gusto, ${nombreUsuario}! 🎉 Te explico brevemente cómo funcionamos:
+                        // Lógica del bot (Fase 0 y Fase 1)
+                        if (faseActual === 0) {
+                            const saludos = [
+                                `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
+                                `¡Hola! Bienvenido. 📲 Cuéntame, ¿cómo te llamas para tenerte presente?`,
+                                `¡Hola! Qué bueno tenerte por aquí. ¿Cuál es tu nombre?`
+                            ];
+                            const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
+
+                            setTimeout(async () => {
+                                await enviarMensajeMeta(numeroLimpio, saludoElegido);
+                                await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
+                                
+                                await pool.query(
+                                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
+                                    [numeroLimpio, saludoElegido]
+                                );
+                                io.emit('nuevo_mensaje', {
+                                    nombre: nombreContacto,
+                                    numero: numeroLimpio,
+                                    mensaje: saludoElegido,
+                                    tipo: 'text',
+                                    tipo_envio: 'saliente',
+                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                });
+                            }, delayHumano);
+
+                        } else if (faseActual === 1) {
+                            const nombreUsuario = textoMensaje.trim();
+                            await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
+
+                            const mensajeReglas = `¡Mucho gusto, ${nombreUsuario}! 🎉 Te explico brevemente cómo funcionamos:
 
 1️⃣ Con un número de **dos cifras** tienes **hasta 3 oportunidades** de participar y ganar.
 2️⃣ **Garantía Total:** Si tu número coincide con el último dígito, ¡te devolvemos tu dinero y recuperas tu ticket!
@@ -192,53 +198,39 @@ https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
 
 ¡Te esperamos adentro! 🚀`;
 
-                    setTimeout(async () => {
-                        await sock.sendMessage(remitente, { text: mensajeReglas });
-                        
-                        await pool.query(
-                            `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
-                            [numeroLimpio, mensajeReglas]
-                        );
-                        io.emit('nuevo_mensaje', {
-                            nombre: nombreUsuario,
-                            numero: numeroLimpio,
-                            mensaje: mensajeReglas,
-                            tipo: 'text',
-                            tipo_envio: 'saliente',
-                            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                        });
-                    }, delayHumano);
+                            setTimeout(async () => {
+                                await enviarMensajeMeta(numeroLimpio, mensajeReglas);
+                                
+                                await pool.query(
+                                    `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
+                                    [numeroLimpio, mensajeReglas]
+                                );
+                                io.emit('nuevo_mensaje', {
+                                    nombre: nombreUsuario,
+                                    numero: numeroLimpio,
+                                    mensaje: mensajeReglas,
+                                    tipo: 'text',
+                                    tipo_envio: 'saliente',
+                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                });
+                            }, delayHumano);
+                        }
+                    }
                 }
-
-            } catch (dbErr) {
-                console.error('❌ Error procesando mensaje:', dbErr.message);
             }
-        }
-    });
-}
-
-startWhatsApp();
-
-// Ruta de validación para el Webhook de Meta (por si acaso la requiere la app)
-app.get('/webhook', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (mode && token) {
-        if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
-            console.log('WEBHOOK_VERIFIED');
-            res.status(200).send(challenge);
-        } else {
-            res.sendStatus(403);
+            res.sendStatus(200);
+        } catch (err) {
+            console.error('❌ Error procesando webhook de Meta:', err.message);
+            res.sendStatus(500);
         }
     } else {
-        res.sendStatus(400);
+        res.sendStatus(404);
     }
 });
 
 app.get('/api/status', (req, res) => {
-    res.json({ status: connectionStatus, qr: qrCodeGlobal });
+    // Como es Cloud API, el estado operativo depende de que el token y webhook estén activos
+    res.json({ status: 'connected', qr: '' });
 });
 
 app.get('/api/chats', async (req, res) => {
@@ -256,8 +248,7 @@ app.post('/api/enviar', async (req, res) => {
     if (!numero || !mensaje) return res.status(400).json({ success: false, error: 'Faltan datos' });
 
     try {
-        const jid = `${numero}@s.whatsapp.net`;
-        await sock.sendMessage(jid, { text: mensaje });
+        await enviarMensajeMeta(numero, mensaje);
 
         await pool.query(
             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'saliente', 'text', $2, NOW())`,
@@ -271,5 +262,5 @@ app.post('/api/enviar', async (req, res) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor CRM con Baileys corriendo en el puerto ${PORT}`);
+    console.log(`🚀 Servidor CRM Cloud API corriendo en el puerto ${PORT}`);
 });
