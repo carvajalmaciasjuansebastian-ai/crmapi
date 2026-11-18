@@ -42,6 +42,9 @@ async function initDB() {
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Asegurar que la columna fase_bot exista si la tabla ya estaba creada de antes
+            ALTER TABLE contactos ADD COLUMN IF NOT EXISTS fase_bot INT DEFAULT 0;
+
             CREATE TABLE IF NOT EXISTS mensajes (
                 id SERIAL PRIMARY KEY,
                 numero VARCHAR(50),
@@ -51,7 +54,7 @@ async function initDB() {
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        console.log('🟢 Base de datos sincronizada con éxito.');
+        console.log('🟢 Base de datos sincronizada y actualizada con éxito.');
     } catch (err) {
         console.error('❌ Error al inicializar DB:', err.message);
     }
@@ -113,6 +116,7 @@ app.post('/webhook', async (req, res) => {
 
                         console.log(`📩 Mensaje entrante Cloud API de ${nombreContacto} (${numeroLimpio}): ${textoMensaje}`);
 
+                        // 1. Buscar o registrar el contacto PRIMERO para obtener su fase real actual
                         let contactoRes = await pool.query('SELECT * FROM contactos WHERE numero = $1', [numeroLimpio]);
                         let faseActual = 0;
 
@@ -133,11 +137,13 @@ app.post('/webhook', async (req, res) => {
                             );
                         }
 
+                        // 2. Guardar el mensaje entrante en la base de datos
                         await pool.query(
                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
                             [numeroLimpio, textoMensaje]
                         );
 
+                        // 3. Emitir el mensaje entrante al CRM web via Socket.io
                         io.emit('nuevo_mensaje', {
                             nombre: nombreContacto,
                             numero: numeroLimpio,
@@ -149,6 +155,7 @@ app.post('/webhook', async (req, res) => {
 
                         const delayHumano = Math.floor(Math.random() * (3000 - 1000 + 1)) + 1000;
 
+                        // 4. Lógica de fases evaluada de manera estricta según la base de datos
                         if (faseActual === 0) {
                             const saludos = [
                                 `¡Hola! 👋 Qué gusto saludarte. Para darte la mejor atención, ¿me regalarías tu nombre por favor?`,
@@ -157,6 +164,7 @@ app.post('/webhook', async (req, res) => {
                             ];
                             const saludoElegido = saludos[Math.floor(Math.random() * saludos.length)];
 
+                            // Avanzamos la fase inmediatamente a 1 para evitar bucles si entra otro mensaje rápido
                             await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
 
                             setTimeout(async () => {
@@ -179,6 +187,7 @@ app.post('/webhook', async (req, res) => {
                         } else if (faseActual === 1) {
                             const nombreUsuario = textoMensaje.trim();
                             
+                            // Guardamos el nombre y pasamos la fase a 2 para que no vuelva a pedir el nombre
                             await pool.query('UPDATE contactos SET nombre = $1, fase_bot = 2 WHERE numero = $2', [nombreUsuario, numeroLimpio]);
 
                             const mensajeReglas = `¡Mucho gusto, ${nombreUsuario}! 🎉 Te explico brevemente cómo funcionamos:
