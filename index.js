@@ -67,66 +67,24 @@ initDB();
 
 async function enviarMensajeMeta(destinatario, texto) {
     try {
-        // Detecta si el mensaje contiene un enlace de invitación a grupo de WhatsApp
-        const matchLink = texto.match(/https:\/\/chat\.whatsapp\.com\/[^\s]+/);
-
-        if (matchLink) {
-            const urlGrupo = matchLink[0];
-            // Elimina la URL cruda del texto para que el cliente no vea enlaces sospechosos
-            const textoLimpio = texto
-                .replace(urlGrupo, '')
-                .replace(/\n{3,}/g, '\n\n')
-                .trim()
-                .substring(0, 1020);
-
-            await axios.post(
-                `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-                {
-                    messaging_product: "whatsapp",
-                    recipient_type: "individual",
-                    to: destinatario,
-                    type: "interactive",
-                    interactive: {
-                        type: "cta_url",
-                        body: {
-                            text: textoLimpio
-                        },
-                        action: {
-                            name: "cta_url",
-                            parameters: {
-                                display_text: "Unirme al grupo oficial",
-                                url: urlGrupo
-                            }
-                        }
-                    }
-                },
-                {
-                    headers: {
-                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    }
+        await axios.post(
+            `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: "whatsapp",
+                to: destinatario,
+                type: "text",
+                text: { 
+                    body: texto,
+                    preview_url: true // Activa la vista previa de forma nativa permitida por Meta
                 }
-            );
-        } else {
-            await axios.post(
-                `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-                {
-                    messaging_product: "whatsapp",
-                    to: destinatario,
-                    type: "text",
-                    text: {
-                        body: texto,
-                        preview_url: true
-                    }
-                },
-                {
-                    headers: {
-                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    'Content-Type': 'application/json'
                 }
-            );
-        }
+            }
+        );
     } catch (err) {
         console.error('❌ Error enviando mensaje por Meta Cloud API:', err.response?.data || err.message);
     }
@@ -161,7 +119,6 @@ app.post('/webhook', async (req, res) => {
                         const numeroLimpio = msgObj.from;
                         const textoMensaje = msgObj.text?.body || '';
                         
-                        // Ignorar mensajes propios para evitar bucles
                         if (numeroLimpio === PHONE_NUMBER_ID || numeroLimpio === "573042187204") {
                             continue;
                         }
@@ -174,7 +131,6 @@ app.post('/webhook', async (req, res) => {
                         let faseActual = 0;
 
                         if (contactoRes.rows.length === 0) {
-                            // Contacto nuevo: entra en fase 0 para recibir su mensaje de bienvenida
                             await pool.query(
                                 `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 0, NOW())`,
                                 [numeroLimpio, nombreContacto, textoMensaje]
@@ -191,13 +147,11 @@ app.post('/webhook', async (req, res) => {
                             );
                         }
 
-                        // Guardar mensaje entrante
                         await pool.query(
                             `INSERT INTO mensajes (numero, tipo_envio, tipo_contenido, contenido, fecha) VALUES ($1, 'entrante', 'text', $2, NOW())`,
                             [numeroLimpio, textoMensaje]
                         );
 
-                        // Emitir al CRM web en tiempo real
                         io.emit('nuevo_mensaje', {
                             nombre: nombreContacto,
                             numero: numeroLimpio,
@@ -207,7 +161,6 @@ app.post('/webhook', async (req, res) => {
                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         });
 
-                        // Si es su primer mensaje (fase 0), enviar la bienvenida configurada en el CRM
                         if (faseActual === 0) {
                             const configRes = await pool.query('SELECT * FROM configuracion');
                             let bienvenidaActiva = false;
@@ -219,7 +172,6 @@ app.post('/webhook', async (req, res) => {
                             });
 
                             if (bienvenidaActiva && bienvenidaTexto.trim() !== '') {
-                                // Pasar a fase 1 de inmediato para no volver a enviar la bienvenida a este número
                                 await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
 
                                 setTimeout(async () => {
