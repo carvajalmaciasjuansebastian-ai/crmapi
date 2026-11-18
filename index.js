@@ -116,7 +116,7 @@ app.post('/webhook', async (req, res) => {
                         const numeroLimpio = msgObj.from;
                         const textoMensaje = msgObj.text?.body || '';
                         
-                        // Ignorar mensajes que vengan del propio número de la API
+                        // Ignorar mensajes propios para evitar bucles
                         if (numeroLimpio === PHONE_NUMBER_ID || numeroLimpio === "573042187204") {
                             continue;
                         }
@@ -129,13 +129,14 @@ app.post('/webhook', async (req, res) => {
                         let faseActual = 0;
 
                         if (contactoRes.rows.length === 0) {
+                            // Contacto nuevo: entra en fase 0 para recibir su mensaje de bienvenida
                             await pool.query(
-                                `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 1, NOW())`,
+                                `INSERT INTO contactos (numero, nombre, ultimo_mensaje, leido, fase_bot, fecha) VALUES ($1, $2, $3, FALSE, 0, NOW())`,
                                 [numeroLimpio, nombreContacto, textoMensaje]
                             );
                             faseActual = 0;
                         } else {
-                            faseActual = contactoRes.rows[0].fase_bot !== null ? Number(contactoRes.rows[0].fase_bot) : 1;
+                            faseActual = contactoRes.rows[0].fase_bot !== null ? Number(contactoRes.rows[0].fase_bot) : 0;
                             if (contactoRes.rows[0].nombre && contactoRes.rows[0].nombre !== 'Aventurero') {
                                 nombreContacto = contactoRes.rows[0].nombre;
                             }
@@ -161,7 +162,7 @@ app.post('/webhook', async (req, res) => {
                             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         });
 
-                        // Si es la primera vez que escribe (fase 0), revisar si la Auto-Bienvenida está activa en el CRM
+                        // Si es su primer mensaje (fase 0), enviar la bienvenida configurada en el CRM
                         if (faseActual === 0) {
                             const configRes = await pool.query('SELECT * FROM configuracion');
                             let bienvenidaActiva = false;
@@ -173,6 +174,9 @@ app.post('/webhook', async (req, res) => {
                             });
 
                             if (bienvenidaActiva && bienvenidaTexto.trim() !== '') {
+                                // Pasar a fase 1 de inmediato para no volver a enviar la bienvenida a este número
+                                await pool.query('UPDATE contactos SET fase_bot = 1 WHERE numero = $1', [numeroLimpio]);
+
                                 setTimeout(async () => {
                                     await enviarMensajeMeta(numeroLimpio, bienvenidaTexto);
                                     
@@ -204,7 +208,6 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// Rutas de Configuración de Auto-Bienvenida para el CRM
 app.get('/api/configuracion', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM configuracion');
@@ -237,7 +240,6 @@ app.post('/api/configuracion', async (req, res) => {
     }
 });
 
-// Ruta para marcar chat como leído al abrirlo en el CRM
 app.post('/api/leer', async (req, res) => {
     const { numero } = req.body;
     if (!numero) return res.status(400).json({ error: 'Falta número' });
