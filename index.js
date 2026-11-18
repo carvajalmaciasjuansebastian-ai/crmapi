@@ -1,5 +1,5 @@
 const express = require('express');
-const http = http = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -218,6 +218,24 @@ https://chat.whatsapp.com/CF7FdHHK7NyHQrtI0AUbIv
 }
 
 startWhatsApp();
+
+// Ruta de validación para el Webhook de Meta (por si acaso la requiere la app)
+app.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode && token) {
+        if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+            console.log('WEBHOOK_VERIFIED');
+            res.status(200).send(challenge);
+        } else {
+            res.sendStatus(403);
+        }
+    } else {
+        res.sendStatus(400);
+    }
+});
 
 app.get('/api/status', (req, res) => {
     res.json({ status: connectionStatus, qr: qrCodeGlobal });
